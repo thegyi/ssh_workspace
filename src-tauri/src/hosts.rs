@@ -22,6 +22,8 @@ pub struct Host {
     pub port: u16,
     pub username: String,
     pub auth: AuthMethod,
+    #[serde(default)]
+    pub x11: bool,
 }
 
 pub struct HostStore {

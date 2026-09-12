@@ -396,6 +396,19 @@ body {
   margin: 4px 0 12px;
 }
 
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin: 10px 0 4px;
+  cursor: pointer;
+}
+
+.check input {
+  accent-color: var(--accent);
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

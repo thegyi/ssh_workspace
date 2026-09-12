@@ -1,4 +1,6 @@
 mod hosts;
+#[cfg(unix)]
+mod x11;
 mod sftp;
 mod ssh;
 

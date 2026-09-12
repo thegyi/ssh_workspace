@@ -111,6 +111,11 @@ document
   .querySelectorAll("#f-auth button")
   .forEach((b) => b.addEventListener("click", () => setAuthKind(b.dataset.value)));
 
+// X11 forwarding is only wired up on Linux clients (unix-gated backend).
+if (!navigator.platform.startsWith("Linux")) {
+  f("f-x11-row").hidden = true;
+}
+
 function openHostModal(host) {
   editingId = host ? host.id : null;
   document.getElementById("host-modal-title").textContent = host ? "Edit host" : "Add host";
@@ -124,6 +129,7 @@ function openHostModal(host) {
   f("f-key-path").value =
     kind === "key" ? host?.auth?.path ?? "~/.ssh/id_ed25519" : "~/.ssh/id_ed25519";
   f("f-passphrase").value = kind === "key" ? host?.auth?.passphrase ?? "" : "";
+  f("f-x11").checked = !!host?.x11;
   hostModal.hidden = false;
   f("f-name").focus();
 }
@@ -150,6 +156,7 @@ hostForm.addEventListener("submit", async (e) => {
     port: Number(f("f-port").value) || 22,
     username: f("f-user").value.trim(),
     auth,
+    x11: f("f-x11").checked,
   };
   try {
     await invoke("save_host", { host });

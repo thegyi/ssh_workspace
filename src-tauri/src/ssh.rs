@@ -5,7 +5,7 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -136,7 +136,7 @@ pub fn connect(
     rows: u32,
     known_hosts: &Path,
 ) -> Result<(String, Option<String>), String> {
-    let (sess, notice) = establish(&host, secret, known_hosts)?;
+    let (sess, notice) = establish(&host, secret.clone(), known_hosts)?;
 
     let mut channel = sess
         .channel_session()
@@ -154,17 +154,38 @@ pub fn connect(
     mgr.insert(
         &session_id,
         SessionEntry {
-            tx,
+            tx: tx.clone(),
             host_id: host.id.clone(),
         },
     );
 
     let data_event = format!("ssh-data-{session_id}");
     let exit_event = format!("ssh-exit-{session_id}");
+    let alive = Arc::new(AtomicBool::new(true));
+
+    // X11 forwarding: second SSH session holding a remote port forward,
+    // each inbound connection proxied to the local X server.
+    #[cfg(unix)]
+    if host.x11 {
+        let (x_app, x_event, x_host, x_secret, x_kh, x_tx, x_alive) = (
+            app.clone(),
+            data_event.clone(),
+            host.clone(),
+            secret,
+            known_hosts.to_path_buf(),
+            tx,
+            alive.clone(),
+        );
+        thread::spawn(move || {
+            crate::x11::start(x_app, x_event, x_host, x_secret, x_kh, x_tx, x_alive);
+        });
+    }
+
     let thread_mgr = mgr.clone();
     let thread_id = session_id.clone();
     thread::spawn(move || {
         pump_loop(sess, channel, rx, &app, &data_event);
+        alive.store(false, Ordering::Relaxed);
         thread_mgr.remove(&thread_id);
         let _ = app.emit(&exit_event, 0);
     });
