@@ -1,0 +1,18 @@
+{
+  "name": "ssh-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SSH workspace: host manager + multi-terminal console (Tauri 2)",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
+    "build": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0"
+  }
+}

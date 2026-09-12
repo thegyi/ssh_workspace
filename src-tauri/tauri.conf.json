@@ -1,0 +1,55 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "SSH Workspace",
+  "version": "0.1.0",
+  "identifier": "dev.sshworkspace.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "SSH Workspace",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 560
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libssl3"
+        ],
+        "desktopTemplate": "packaging/app.desktop",
+        "files": {
+          "/usr/share/applications/dev.sshworkspace.desktop.desktop": "packaging/dev.sshworkspace.desktop.desktop"
+        }
+      },
+      "rpm": {
+        "depends": [
+          "openssl-libs"
+        ],
+        "desktopTemplate": "packaging/app.desktop",
+        "files": {
+          "/usr/share/applications/dev.sshworkspace.desktop.desktop": "packaging/dev.sshworkspace.desktop.desktop"
+        }
+      }
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ]
+  }
+}

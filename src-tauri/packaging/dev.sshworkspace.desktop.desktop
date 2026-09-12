@@ -1,0 +1,9 @@
+[Desktop Entry]
+Categories=System;Network;
+Comment=SSH workspace with host management and multi-terminal console
+Exec=ssh-workspace
+Icon=ssh-workspace
+Name=SSH Workspace
+Terminal=false
+Type=Application
+StartupWMClass=dev.sshworkspace.desktop
