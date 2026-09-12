@@ -83,3 +83,36 @@ jobs:
             src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: warn
+
+  build-windows:
+    name: Build Windows bundles
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      # npm run build has a bash-style PATH prefix that fails in cmd/pwsh;
+      # the runner's cargo is already on PATH so call the CLI directly.
+      - name: Build Tauri app
+        run: npx tauri build
+
+      - name: Upload bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-workspace-windows-bundles
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: warn
