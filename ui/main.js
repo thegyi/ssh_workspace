@@ -276,6 +276,7 @@ function closeTab(sess) {
     );
   }
   sess.unlisteners.forEach((u) => u());
+  sess.ro?.disconnect();
   sess.term?.dispose();
   sess.tabEl.remove();
   sess.pane.remove();
@@ -314,8 +315,8 @@ async function openSession(host) {
   const secret = await resolveSecret(host);
   if (secret === undefined) return;
   const sess = createTab(host, "term");
-  buildTerminal(sess);
   activateTab(sess);
+  buildTerminal(sess);
   try {
     const res = await invoke("connect_host", {
       hostId: host.id,
@@ -324,6 +325,11 @@ async function openSession(host) {
       rows: sess.term.rows,
     });
     sess.sid = res.session_id;
+    invoke("ssh_resize", {
+      sessionId: sess.sid,
+      cols: sess.term.cols,
+      rows: sess.term.rows,
+    }).catch(() => {});
     if (res.notice) sess.term.write(`\x1b[33m${res.notice}\x1b[0m\r\n`);
     sess.unlisteners = [
       await listen(`ssh-data-${sess.sid}`, (ev) => sess.term.write(new Uint8Array(ev.payload))),
@@ -356,6 +362,10 @@ function buildTerminal(sess) {
   fit.fit();
   sess.term = term;
   sess.fit = fit;
+  sess.ro = new ResizeObserver(() => {
+    if (sess.pane.offsetParent !== null) fit.fit();
+  });
+  sess.ro.observe(sess.pane);
 
   term.onData((d) => {
     if (sess.sid && !sess.dead) {
