@@ -75,6 +75,27 @@ impl KeyboardInteractivePrompt for UiPrompter<'_> {
     }
 }
 
+/// Ask the frontend for one masked input via the `ssh-auth-prompt` bridge.
+/// Used when a stored keyring marker fails to resolve (locked/missing
+/// keyring) so the connect can still proceed instead of dead-ending.
+fn ui_prompt(app: &AppHandle, prompt: &str) -> Option<String> {
+    let id = PROMPT_ID.fetch_add(1, Ordering::Relaxed);
+    let (tx, rx) = mpsc::channel();
+    auth_replies().lock().unwrap().insert(id, tx);
+    let _ = app.emit(
+        "ssh-auth-prompt",
+        AuthPromptReq {
+            id,
+            username: String::new(),
+            instructions: String::new(),
+            prompts: vec![(prompt.to_string(), false)],
+        },
+    );
+    rx.recv_timeout(Duration::from_secs(300))
+        .ok()
+        .and_then(|mut a| a.pop())
+}
+
 pub enum SshCommand {
     Data(Vec<u8>),
     Resize { cols: u32, rows: u32 },
@@ -613,19 +634,51 @@ fn authenticate(
         .auth_methods(&host.username)
         .map(str::to_string)
         .unwrap_or_default();
+    // Secret entered via fallback prompt: re-store it in the keyring on
+    // success so the next connect resolves the marker again.
+    let mut heal: Option<(&'static str, String)> = None;
+    let marker_lost = |v: &Option<String>| -> bool {
+        v.as_deref()
+            .is_some_and(|s| s.starts_with(crate::secrets::MARKER_PREFIX))
+            && crate::secrets::resolve_opt(v).is_none()
+    };
     let res = match &host.auth {
         AuthMethod::Password { password } => {
-            let pw = secret
-                .or_else(|| crate::secrets::resolve_opt(password))
-                .ok_or_else(|| "no password provided".to_string());
-            pw.and_then(|pw| {
+            let mut pw = secret.or_else(|| crate::secrets::resolve_opt(password));
+            if pw.is_none() && marker_lost(password) {
+                if let Some(app) = app {
+                    pw = ui_prompt(
+                        app,
+                        &format!("Password for {}@{}", host.username, host.host),
+                    );
+                    if let Some(v) = pw.as_deref() {
+                        heal = Some(("password", v.to_string()));
+                    }
+                }
+            }
+            pw.ok_or_else(|| {
+                if marker_lost(password) {
+                    "stored password missing from the OS keyring".to_string()
+                } else {
+                    "no password provided".to_string()
+                }
+            })
+            .and_then(|pw| {
                 sess.userauth_password(&host.username, &pw)
                     .map_err(|e| format!("password authentication failed: {e}"))
             })
         }
         AuthMethod::Key { path, passphrase } => {
             let key_path = expand_tilde(path);
-            let pp = secret.or_else(|| crate::secrets::resolve_opt(passphrase));
+            let mut pp = secret.or_else(|| crate::secrets::resolve_opt(passphrase));
+            if pp.is_none() && marker_lost(passphrase) {
+                if let Some(app) = app {
+                    pp = ui_prompt(app, &format!("Passphrase for {}", key_path.display()));
+                    if let Some(v) = pp.as_deref() {
+                        heal = Some(("passphrase", v.to_string()));
+                    }
+                }
+            }
             sess.userauth_pubkey_file(
                 &host.username,
                 None,
@@ -657,6 +710,9 @@ fn authenticate(
         }
     };
     if res.is_ok() && sess.authenticated() {
+        if let Some((field, v)) = heal {
+            let _ = crate::secrets::store_secret(&host.id, field, &v);
+        }
         return Ok(());
     }
     let primary_err = res.err();

@@ -30,7 +30,10 @@ tabsEl.append(bcBtn);
 /* ---------------- hosts ---------------- */
 
 const hostSearch = document.getElementById("host-search");
-const collapsedGroups = new Set();
+// Groups start collapsed; expansion state persists across restarts.
+const expandedGroups = new Set(
+  JSON.parse(localStorage.getItem("sshws.groups") || "[]"),
+);
 hostSearch.addEventListener("input", renderHosts);
 
 async function loadHosts() {
@@ -56,16 +59,19 @@ function renderHosts() {
   }
   for (const g of [...groups.keys()].sort((a, b) => a.localeCompare(b))) {
     if (g) {
+      const open = expandedGroups.has(g);
       const head = document.createElement("li");
       head.className = "host-group";
-      head.textContent = `${collapsedGroups.has(g) ? "▸" : "▾"} ${g}`;
+      head.textContent = `${open ? "▾" : "▸"} ${g}`;
       head.addEventListener("click", () => {
-        if (collapsedGroups.has(g)) collapsedGroups.delete(g);
-        else collapsedGroups.add(g);
+        if (expandedGroups.has(g)) expandedGroups.delete(g);
+        else expandedGroups.add(g);
+        localStorage.setItem("sshws.groups", JSON.stringify([...expandedGroups]));
         renderHosts();
       });
       hostListEl.append(head);
-      if (collapsedGroups.has(g)) continue;
+      // Searching overrides the collapsed state so matches stay visible.
+      if (!open && !q) continue;
     }
     for (const h of groups.get(g)) hostListEl.append(hostItem(h));
   }

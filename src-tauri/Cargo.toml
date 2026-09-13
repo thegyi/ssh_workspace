@@ -20,10 +20,11 @@ dirs = "6"
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 
-# keyring default features pull libdbus (Secret Service) — that only
-# exists on Linux/BSD, so enable per-platform backends.
+# keyring has NO default backend: without a store feature it silently
+# uses an in-memory mock, so secrets would not survive a restart.
+# Linux/BSD → Secret Service (GNOME Keyring/KDE Wallet) over D-Bus.
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
-keyring = "3"
+keyring = { version = "3", default-features = false, features = ["sync-secret-service", "crypto-rust"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["apple-native"] }

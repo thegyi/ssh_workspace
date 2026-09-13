@@ -28,6 +28,12 @@ fn load(marker: &str) -> Option<String> {
     Entry::new(SERVICE, k).ok()?.get_password().ok()
 }
 
+/// Store one secret under `host_id:field`. Used to re-heal entries that
+/// went missing from the keyring (e.g. locked/unavailable at save time).
+pub fn store_secret(host_id: &str, field: &str, value: &str) -> Option<String> {
+    store(host_id, field, value)
+}
+
 /// Resolve a stored secret field: marker → keyring value, plaintext → itself.
 pub fn resolve_opt(v: &Option<String>) -> Option<String> {
     match v.as_deref() {
