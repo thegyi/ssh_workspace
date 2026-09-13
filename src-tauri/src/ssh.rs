@@ -1,9 +1,10 @@
 use crate::hosts::{expand_tilde, AuthMethod, Host};
-use ssh2::{CheckResult, KnownHostFileKind, Session};
+use serde::Serialize;
+use ssh2::{CheckResult, KeyboardInteractivePrompt, KnownHostFileKind, Session};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -14,10 +15,137 @@ use tauri::{AppHandle, Emitter};
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+// ---------- keyboard-interactive (2FA) prompt bridge ----------
+//
+// The server may require keyboard-interactive auth (password+OTP, PAM
+// challenges). The connect happens on a blocking thread, so the prompter
+// emits an event to the frontend and waits for `auth_prompt_reply`.
+
+static PROMPT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn auth_replies() -> &'static Mutex<HashMap<u64, Sender<Vec<String>>>> {
+    static R: std::sync::OnceLock<Mutex<HashMap<u64, Sender<Vec<String>>>>> =
+        std::sync::OnceLock::new();
+    R.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Frontend callback: answers for the last emitted `ssh-auth-prompt` event.
+pub fn auth_prompt_reply(id: u64, answers: Vec<String>) {
+    if let Some(tx) = auth_replies().lock().unwrap().remove(&id) {
+        let _ = tx.send(answers);
+    }
+}
+
+#[derive(Serialize, Clone)]
+struct AuthPromptReq {
+    id: u64,
+    username: String,
+    instructions: String,
+    /// (prompt text, echo input visibly) pairs, one answer expected each.
+    prompts: Vec<(String, bool)>,
+}
+
+struct UiPrompter<'a> {
+    app: &'a AppHandle,
+}
+
+impl KeyboardInteractivePrompt for UiPrompter<'_> {
+    fn prompt<'p>(
+        &mut self,
+        username: &str,
+        instructions: &str,
+        prompts: &[ssh2::Prompt<'p>],
+    ) -> Vec<String> {
+        let id = PROMPT_ID.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = mpsc::channel();
+        auth_replies().lock().unwrap().insert(id, tx);
+        let _ = self.app.emit(
+            "ssh-auth-prompt",
+            AuthPromptReq {
+                id,
+                username: username.to_string(),
+                instructions: instructions.to_string(),
+                prompts: prompts
+                    .iter()
+                    .map(|p| (p.text.to_string(), p.echo))
+                    .collect(),
+            },
+        );
+        rx.recv_timeout(Duration::from_secs(300)).unwrap_or_default()
+    }
+}
+
 pub enum SshCommand {
     Data(Vec<u8>),
     Resize { cols: u32, rows: u32 },
+    /// Some(..) records all session output to a file; None stops.
+    SetLog(Option<LogSpec>),
     Disconnect,
+}
+
+/// Session recording target: raw byte stream or asciinema v2 (.cast).
+pub struct LogSpec {
+    pub path: PathBuf,
+    pub cast: bool,
+    pub cols: u32,
+    pub rows: u32,
+}
+
+enum SessLog {
+    Raw(std::fs::File),
+    Cast {
+        f: std::fs::File,
+        start: std::time::Instant,
+    },
+}
+
+impl SessLog {
+    fn open(spec: LogSpec) -> Option<Self> {
+        if let Some(dir) = spec.path.parent() {
+            std::fs::create_dir_all(dir).ok();
+        }
+        if !spec.cast {
+            return std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&spec.path)
+                .ok()
+                .map(SessLog::Raw);
+        }
+        let mut f = std::fs::File::create(&spec.path).ok()?;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let header = serde_json::json!({
+            "version": 2,
+            "width": spec.cols,
+            "height": spec.rows,
+            "timestamp": ts,
+            "env": { "TERM": "xterm-256color" },
+        });
+        writeln!(f, "{header}").ok()?;
+        Some(SessLog::Cast {
+            f,
+            start: std::time::Instant::now(),
+        })
+    }
+
+    fn push(&mut self, data: &[u8]) {
+        match self {
+            SessLog::Raw(f) => {
+                let _ = f.write_all(data);
+            }
+            SessLog::Cast { f, start } => {
+                let ev = serde_json::json!([
+                    start.elapsed().as_secs_f64(),
+                    "o",
+                    String::from_utf8_lossy(data),
+                ]);
+                let _ = writeln!(f, "{ev}");
+            }
+        }
+    }
 }
 
 struct SessionEntry {
@@ -90,20 +218,36 @@ impl SshManager {
 
 /// TCP connect + SSH handshake + host-key check + authentication.
 /// Shared by shell sessions and SFTP sessions.
+/// When `jump` is set, the TCP connection is routed through that host via
+/// a direct-tcpip channel bridged to a local listener (ProxyJump).
 /// Returns the session and an optional first-connection notice.
 pub fn establish(
     host: &Host,
     secret: Option<String>,
+    jump: Option<(&Host, Option<String>)>,
+    app: Option<&AppHandle>,
     known_hosts: &Path,
 ) -> Result<(Session, Option<String>), String> {
-    let addr_str = format!("{}:{}", host.host, host.port);
-    let addr = addr_str
-        .to_socket_addrs()
-        .map_err(|e| format!("cannot resolve {addr_str}: {e}"))?
-        .next()
-        .ok_or_else(|| format!("cannot resolve {addr_str}"))?;
-    let tcp = TcpStream::connect_timeout(&addr, Duration::from_secs(10))
-        .map_err(|e| format!("cannot connect to {addr_str}: {e}"))?;
+    let tcp = match jump {
+        Some((jh, js)) => {
+            if jh.jump.is_some() {
+                return Err("nested jump hosts are not supported".into());
+            }
+            let port = jump_bridge(jh, js, &host.host, host.port, app, known_hosts)?;
+            TcpStream::connect(("127.0.0.1", port))
+                .map_err(|e| format!("jump bridge connect failed: {e}"))?
+        }
+        None => {
+            let addr_str = format!("{}:{}", host.host, host.port);
+            let addr = addr_str
+                .to_socket_addrs()
+                .map_err(|e| format!("cannot resolve {addr_str}: {e}"))?
+                .next()
+                .ok_or_else(|| format!("cannot resolve {addr_str}"))?;
+            TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+                .map_err(|e| format!("cannot connect to {addr_str}: {e}"))?
+        }
+    };
     tcp.set_read_timeout(Some(Duration::from_secs(30))).ok();
     tcp.set_write_timeout(Some(Duration::from_secs(30))).ok();
     tcp.set_nodelay(true).ok();
@@ -115,7 +259,7 @@ pub fn establish(
 
     let notice = check_host_key(&sess, &host.host, host.port, known_hosts)?;
 
-    authenticate(&mut sess, host, secret)?;
+    authenticate(&mut sess, host, secret, app)?;
     if !sess.authenticated() {
         return Err("authentication failed".into());
     }
@@ -125,6 +269,106 @@ pub fn establish(
     Ok((sess, notice))
 }
 
+/// ProxyJump transport: open a direct-tcpip channel on the jump host's
+/// session and bridge it to a one-shot local TCP listener. Returns the
+/// local port; the bridge serves exactly one connection (the inner SSH
+/// session) and exits when it does.
+fn jump_bridge(
+    jump: &Host,
+    secret: Option<String>,
+    target_host: &str,
+    target_port: u16,
+    app: Option<&AppHandle>,
+    known_hosts: &Path,
+) -> Result<u16, String> {
+    let (jsess, _) = establish(jump, secret, None, app, known_hosts)
+        .map_err(|e| format!("jump host {}: {e}", jump.host))?;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| format!("jump bridge listen failed: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    let target = (target_host.to_string(), target_port);
+    let alive = AtomicBool::new(true);
+    thread::spawn(move || {
+        let Ok((mut sock, _)) = listener.accept() else {
+            return;
+        };
+        let mut chan = match jsess.channel_direct_tcpip(&target.0, target.1, None) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        jsess.set_blocking(false);
+        sock.set_nonblocking(true).ok();
+        splice_channel(&mut chan, &mut sock, &alive);
+    });
+    Ok(port)
+}
+
+/// Bidirectional copy between a nonblocking SSH channel and a nonblocking
+/// TCP stream until either side closes or `alive` flips false.
+/// Shared by the jump bridge and the tunnel module.
+pub fn splice_channel(chan: &mut ssh2::Channel, sock: &mut TcpStream, alive: &AtomicBool) {
+    let mut to_sock: VecDeque<u8> = VecDeque::new();
+    let mut to_chan: VecDeque<u8> = VecDeque::new();
+    let mut buf = [0u8; 65536];
+    let mut s_eof = false;
+    loop {
+        if !alive.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut active = false;
+        if !chan.eof() {
+            match chan.read(&mut buf) {
+                Ok(0) => {}
+                Ok(n) => {
+                    active = true;
+                    to_sock.extend(&buf[..n]);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => return,
+            }
+        }
+        if !s_eof {
+            match sock.read(&mut buf) {
+                Ok(0) => s_eof = true,
+                Ok(n) => {
+                    active = true;
+                    to_chan.extend(&buf[..n]);
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(_) => return,
+            }
+        }
+        while !to_sock.is_empty() {
+            match sock.write(to_sock.make_contiguous()) {
+                Ok(0) => break,
+                Ok(n) => {
+                    to_sock.drain(..n);
+                    active = true;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => return,
+            }
+        }
+        while !to_chan.is_empty() {
+            match chan.write(to_chan.make_contiguous()) {
+                Ok(0) => break,
+                Ok(n) => {
+                    to_chan.drain(..n);
+                    active = true;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(_) => return,
+            }
+        }
+        if chan.eof() && s_eof && to_sock.is_empty() && to_chan.is_empty() {
+            return;
+        }
+        if !active {
+            thread::sleep(Duration::from_millis(4));
+        }
+    }
+}
+
 /// Connect to a host, open a shell with a PTY and spawn the I/O pump thread.
 /// Returns the session id and an optional notice to display in the terminal.
 pub fn connect(
@@ -132,11 +376,13 @@ pub fn connect(
     mgr: SshManager,
     host: Host,
     secret: Option<String>,
+    jump: Option<(Host, Option<String>)>,
     cols: u32,
     rows: u32,
     known_hosts: &Path,
 ) -> Result<(String, Option<String>), String> {
-    let (sess, notice) = establish(&host, secret.clone(), known_hosts)?;
+    let jump_ref = jump.as_ref().map(|(h, s)| (h, s.clone()));
+    let (sess, notice) = establish(&host, secret.clone(), jump_ref, Some(&app), known_hosts)?;
 
     let mut channel = sess
         .channel_session()
@@ -163,22 +409,57 @@ pub fn connect(
     let exit_event = format!("ssh-exit-{session_id}");
     let alive = Arc::new(AtomicBool::new(true));
 
+    // Shell integration (bash): emit OSC 7 (cwd) after every prompt so SFTP
+    // panes can follow `cd`, and OSC 133 C/D (command start/finish+exit) so
+    // the frontend can notify on long-running commands. Harmless on shells
+    // that ignore PROMPT_COMMAND/DEBUG traps. Leading space keeps it out of
+    // history (HISTCONTROL=ignorespace); trailing `clear` hides the echo.
+    let _ = tx.send(SshCommand::Data(
+        concat!(
+            " SSHWS_OLDPC=\"${PROMPT_COMMAND:-}\"; ",
+            "__sshws_pc() { local r=$?; __sshws_in=1; ",
+            "printf '\\033]7;file://%s%s\\007' \"$(hostname)\" \"$PWD\"; ",
+            "printf '\\033]133;D;%s\\007' \"$r\"; ",
+            "[ -n \"$SSHWS_OLDPC\" ] && eval \"$SSHWS_OLDPC\"; __sshws_in=0; }; ",
+            "PROMPT_COMMAND=__sshws_pc; ",
+            "trap '[ \"${__sshws_in:-0}\" = 0 ] && printf \"\\033]133;C\\007\"' DEBUG; ",
+            "clear\n"
+        )
+        .as_bytes()
+        .to_vec(),
+    ));
+
     // X11 forwarding: second SSH session holding a remote port forward,
-    // each inbound connection proxied to the local X server.
-    #[cfg(unix)]
+    // each inbound connection proxied to the local X server. Works
+    // everywhere a local X server is reachable (X11/XWayland on Linux,
+    // XQuartz on macOS, VcXsrv/Xming on Windows).
     if host.x11 {
-        let (x_app, x_event, x_host, x_secret, x_kh, x_tx, x_alive) = (
+        let (x_app, x_event, x_host, x_secret, x_jump, x_kh, x_tx, x_alive) = (
             app.clone(),
             data_event.clone(),
             host.clone(),
-            secret,
+            secret.clone(),
+            jump.clone(),
             known_hosts.to_path_buf(),
-            tx,
+            tx.clone(),
             alive.clone(),
         );
         thread::spawn(move || {
-            crate::x11::start(x_app, x_event, x_host, x_secret, x_kh, x_tx, x_alive);
+            crate::x11::start(x_app, x_event, x_host, x_secret, x_jump, x_kh, x_tx, x_alive);
         });
+    }
+
+    // Port forwards configured on the host (local / remote / socks5).
+    if !host.tunnels.is_empty() {
+        crate::tunnels::start_all(
+            app.clone(),
+            data_event.clone(),
+            host.clone(),
+            secret.clone(),
+            jump,
+            known_hosts.to_path_buf(),
+            alive.clone(),
+        );
     }
 
     let thread_mgr = mgr.clone();
@@ -203,6 +484,7 @@ fn pump_loop(
 ) {
     let mut buf = [0u8; 32768];
     let mut pending: VecDeque<u8> = VecDeque::new();
+    let mut log: Option<SessLog> = None;
     let mut last_ka = std::time::Instant::now();
     loop {
         if last_ka.elapsed() >= Duration::from_secs(15) {
@@ -220,6 +502,9 @@ fn pump_loop(
                 SshCommand::Data(d) => pending.extend(d),
                 SshCommand::Resize { cols, rows } => {
                     let _ = channel.request_pty_size(cols, rows, None, None);
+                }
+                SshCommand::SetLog(spec) => {
+                    log = spec.and_then(SessLog::open);
                 }
                 SshCommand::Disconnect => disconnect = true,
             }
@@ -245,6 +530,9 @@ fn pump_loop(
         match channel.read(&mut buf) {
             Ok(n) if n > 0 => {
                 got_data = true;
+                if let Some(f) = log.as_mut() {
+                    f.push(&buf[..n]);
+                }
                 let _ = app.emit(data_event, buf[..n].to_vec());
             }
             _ => {}
@@ -252,6 +540,9 @@ fn pump_loop(
         match channel.stderr().read(&mut buf) {
             Ok(n) if n > 0 => {
                 got_data = true;
+                if let Some(f) = log.as_mut() {
+                    f.push(&buf[..n]);
+                }
                 let _ = app.emit(data_event, buf[..n].to_vec());
             }
             _ => {}
@@ -310,18 +601,31 @@ fn check_host_key(
     }
 }
 
-fn authenticate(sess: &mut Session, host: &Host, secret: Option<String>) -> Result<(), String> {
-    match &host.auth {
+fn authenticate(
+    sess: &mut Session,
+    host: &Host,
+    secret: Option<String>,
+    app: Option<&AppHandle>,
+) -> Result<(), String> {
+    // Advertised methods decide whether a keyboard-interactive fallback
+    // (OTP/2FA, PAM challenges) is even possible after primary auth fails.
+    let methods = sess
+        .auth_methods(&host.username)
+        .map(str::to_string)
+        .unwrap_or_default();
+    let res = match &host.auth {
         AuthMethod::Password { password } => {
             let pw = secret
-                .or_else(|| password.clone())
-                .ok_or_else(|| "no password provided".to_string())?;
-            sess.userauth_password(&host.username, &pw)
-                .map_err(|e| format!("password authentication failed: {e}"))
+                .or_else(|| crate::secrets::resolve_opt(password))
+                .ok_or_else(|| "no password provided".to_string());
+            pw.and_then(|pw| {
+                sess.userauth_password(&host.username, &pw)
+                    .map_err(|e| format!("password authentication failed: {e}"))
+            })
         }
         AuthMethod::Key { path, passphrase } => {
             let key_path = expand_tilde(path);
-            let pp = secret.or_else(|| passphrase.clone());
+            let pp = secret.or_else(|| crate::secrets::resolve_opt(passphrase));
             sess.userauth_pubkey_file(
                 &host.username,
                 None,
@@ -351,6 +655,24 @@ fn authenticate(sess: &mut Session, host: &Host, secret: Option<String>) -> Resu
             }
             Err(format!("agent authentication failed: {last_err}"))
         }
+    };
+    if res.is_ok() && sess.authenticated() {
+        return Ok(());
+    }
+    let primary_err = res.err();
+    // Servers using OTP/2FA (or password-over-PAM) only offer
+    // keyboard-interactive: bridge each prompt to the frontend modal.
+    if methods.contains("keyboard-interactive") {
+        if let Some(app) = app {
+            let mut prompter = UiPrompter { app };
+            return sess
+                .userauth_keyboard_interactive(&host.username, &mut prompter)
+                .map_err(|e| format!("interactive authentication failed: {e}"));
+        }
+    }
+    match primary_err {
+        Some(e) => Err(e),
+        None => Ok(()),
     }
 }
 

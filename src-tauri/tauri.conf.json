@@ -24,7 +24,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "deb",
+      "rpm"
+    ],
     "linux": {
       "deb": {
         "depends": [

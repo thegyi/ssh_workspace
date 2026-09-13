@@ -15,7 +15,18 @@ serde_json = "1"
 ssh2 = "0.9"
 dirs = "6"
 
-# Windows runners have no reliably discoverable OpenSSL for openssl-sys;
-# build it from source there (Linux keeps linking the system libssl3).
-[target.'cfg(windows)'.dependencies]
+# Windows/macOS runners have no reliably discoverable OpenSSL for
+# openssl-sys; build it from source there (Linux links system libssl3).
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 ssh2 = { version = "0.9", features = ["vendored-openssl"] }
+
+# keyring default features pull libdbus (Secret Service) — that only
+# exists on Linux/BSD, so enable per-platform backends.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+keyring = "3"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }

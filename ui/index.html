@@ -14,7 +14,12 @@
   <div id="app">
     <aside id="sidebar">
       <div class="brand">SSH Workspace</div>
-      <button id="add-host-btn" class="btn primary">+ Add host</button>
+      <div class="sidebar-btns">
+        <button id="add-host-btn" class="btn primary grow">+ Add host</button>
+        <button id="import-btn" class="btn" title="Import hosts from ~/.ssh/config">⇩</button>
+        <button id="settings-btn" class="btn" title="Settings">⚙</button>
+      </div>
+      <input id="host-search" type="search" placeholder="Filter hosts…" autocomplete="off">
       <ul id="host-list"></ul>
     </aside>
     <main id="main">
@@ -68,12 +73,29 @@
             <input id="f-passphrase" type="password" autocomplete="off" placeholder="optional">
           </label>
         </div>
-        <div id="f-x11-row">
-          <label class="check">
-            <input type="checkbox" id="f-x11"> X11 forwarding (remote GUI apps on this display)
+        <div class="row">
+          <label class="grow">Group
+            <input id="f-group" list="group-list" placeholder="optional" autocomplete="off">
+            <datalist id="group-list"></datalist>
+          </label>
+          <label class="grow">Jump host (bastion)
+            <select id="f-jump">
+              <option value="">none</option>
+            </select>
           </label>
         </div>
-        <p class="hint">Secrets are stored in plaintext in hosts.json.</p>
+        <div class="field">
+          <span class="field-label">Port forwards</span>
+          <div id="f-tunnels"></div>
+          <button type="button" class="btn small" id="f-tunnel-add">+ Add tunnel</button>
+        </div>
+        <div id="f-x11-row">
+          <label class="check">
+            <input type="checkbox" id="f-x11"> X11 forwarding (remote GUI apps; needs a local X server — XQuartz /
+            VcXsrv)
+          </label>
+        </div>
+        <p class="hint">Secrets go to the system keyring when available, otherwise plaintext in hosts.json.</p>
         <div class="modal-actions">
           <button type="button" class="btn" id="host-cancel">Cancel</button>
           <button type="submit" class="btn primary">Save</button>
@@ -95,6 +117,16 @@
     </div>
   </div>
 
+  <div id="info-modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <h3 id="info-title">Properties</h3>
+      <pre id="info-body" class="info-body"></pre>
+      <div class="modal-actions">
+        <button type="button" class="btn primary" id="info-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <div id="text-modal" class="modal-overlay" hidden>
     <div class="modal">
       <h3 id="text-title">Name</h3>
@@ -108,10 +140,46 @@
     </div>
   </div>
 
+  <div id="import-modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <h3>Import from ~/.ssh/config</h3>
+      <div id="import-list" class="import-list"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="import-cancel">Cancel</button>
+        <button type="button" class="btn primary" id="import-ok">Import selected</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="settings-modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <h3>Settings</h3>
+      <form id="settings-form">
+        <label>Theme
+          <select id="s-theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+        <label>Terminal font
+          <input id="s-font" placeholder="monospace" autocomplete="off">
+        </label>
+        <label>Font size
+          <input id="s-size" type="number" min="8" max="32" step="1">
+        </label>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="settings-cancel">Cancel</button>
+          <button type="submit" class="btn primary">Apply</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="toasts"></div>
 
   <script src="vendor/xterm.js"></script>
   <script src="vendor/addon-fit.js"></script>
+  <script src="vendor/addon-search.js"></script>
   <script src="main.js"></script>
 </body>
 

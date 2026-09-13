@@ -10,8 +10,28 @@ const emptyStateEl = document.getElementById("empty-state");
 let hosts = [];
 const tabs = []; // { host, kind:'term'|'ftp', term, fit, pane, tabEl, dot, sid, dead, unlisteners, ft }
 let activeTab = null;
+let broadcastMode = false; // send keystrokes from the focused terminal to all live ones
+let dragTab = null; // session being drag-reordered in the tab bar
+
+// Broadcast-input toggle pinned to the right end of the tab bar.
+const bcBtn = document.createElement("button");
+bcBtn.id = "broadcast-btn";
+bcBtn.textContent = "⇶";
+bcBtn.title = "Broadcast input to all terminals";
+bcBtn.addEventListener("click", () => {
+  broadcastMode = !broadcastMode;
+  bcBtn.classList.toggle("on", broadcastMode);
+  bcBtn.title = broadcastMode
+    ? "Broadcasting input to all terminals — click to stop"
+    : "Broadcast input to all terminals";
+});
+tabsEl.append(bcBtn);
 
 /* ---------------- hosts ---------------- */
+
+const hostSearch = document.getElementById("host-search");
+const collapsedGroups = new Set();
+hostSearch.addEventListener("input", renderHosts);
 
 async function loadHosts() {
   hosts = await invoke("list_hosts");
@@ -20,62 +40,102 @@ async function loadHosts() {
 
 function renderHosts() {
   hostListEl.innerHTML = "";
-  for (const h of hosts) {
-    const li = document.createElement("li");
-    li.className = "host-item";
-
-    const info = document.createElement("div");
-    info.className = "host-info";
-    const name = document.createElement("div");
-    name.className = "host-name";
-    name.textContent = h.name;
-    const sub = document.createElement("div");
-    sub.className = "host-sub";
-    sub.textContent = `${h.username}@${h.host}:${h.port}`;
-    info.append(name, sub);
-
-    const actions = document.createElement("div");
-    actions.className = "host-actions";
-    actions.append(
-      actionBtn("⇄", "File transfer (SFTP)", (e) => {
-        e.stopPropagation();
-        openFtp(h);
-      }),
-      actionBtn("✎", "Edit host", (e) => {
-        e.stopPropagation();
-        openHostModal(h);
-      }),
-      actionBtn("⟲", "Reset host key (known_hosts)", async (e) => {
-        e.stopPropagation();
-        try {
-          const n = await invoke("reset_host_key", { id: h.id });
-          toast(
-            n > 0
-              ? `Removed ${n} known_hosts entr${n === 1 ? "y" : "ies"} for ${h.host}`
-              : `No stored key found for ${h.host}`,
-          );
-        } catch (err) {
-          toast(String(err), true);
-        }
-      }),
-      actionBtn(
-        "✕",
-        "Remove host",
-        async (e) => {
-          e.stopPropagation();
-          if (!confirm(`Remove host "${h.name}"?`)) return;
-          await invoke("delete_host", { id: h.id });
-          tabs.filter((t) => t.host.id === h.id).forEach(closeTab);
-          await loadHosts();
-        },
-        true,
+  const q = hostSearch.value.trim().toLowerCase();
+  const visible = hosts.filter(
+    (h) =>
+      !q ||
+      [h.name, h.host, h.username, h.group].some((s) =>
+        (s || "").toLowerCase().includes(q),
       ),
-    );
-
-    li.append(info, actions);
-    li.addEventListener("click", () => openSession(h));
-    hostListEl.append(li);
+  );
+  const groups = new Map();
+  for (const h of visible) {
+    const g = h.group || "";
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g).push(h);
   }
+  for (const g of [...groups.keys()].sort((a, b) => a.localeCompare(b))) {
+    if (g) {
+      const head = document.createElement("li");
+      head.className = "host-group";
+      head.textContent = `${collapsedGroups.has(g) ? "▸" : "▾"} ${g}`;
+      head.addEventListener("click", () => {
+        if (collapsedGroups.has(g)) collapsedGroups.delete(g);
+        else collapsedGroups.add(g);
+        renderHosts();
+      });
+      hostListEl.append(head);
+      if (collapsedGroups.has(g)) continue;
+    }
+    for (const h of groups.get(g)) hostListEl.append(hostItem(h));
+  }
+}
+
+function hostItem(h) {
+  const li = document.createElement("li");
+  li.className = "host-item";
+
+  const info = document.createElement("div");
+  info.className = "host-info";
+  info.title = `${h.name} — ${h.username}@${h.host}:${h.port}`;
+  const name = document.createElement("div");
+  name.className = "host-name";
+  name.textContent = h.name;
+  const sub = document.createElement("div");
+  sub.className = "host-sub";
+  sub.textContent = `${h.username}@${h.host}:${h.port}`;
+  info.append(name, sub);
+
+  const actions = document.createElement("div");
+  actions.className = "host-actions";
+  actions.append(
+    actionBtn("⇄", "File transfer (SFTP)", (e) => {
+      e.stopPropagation();
+      openFtp(h);
+    }),
+    actionBtn("✎", "Edit host", (e) => {
+      e.stopPropagation();
+      openHostModal(h);
+    }),
+    actionBtn("⧉", "Duplicate host", async (e) => {
+      e.stopPropagation();
+      try {
+        await invoke("duplicate_host", { id: h.id });
+        await loadHosts();
+      } catch (err) {
+        toast(String(err), true);
+      }
+    }),
+    actionBtn("⟲", "Reset host key (known_hosts)", async (e) => {
+      e.stopPropagation();
+      try {
+        const n = await invoke("reset_host_key", { id: h.id });
+        toast(
+          n > 0
+            ? `Removed ${n} known_hosts entr${n === 1 ? "y" : "ies"} for ${h.host}`
+            : `No stored key found for ${h.host}`,
+        );
+      } catch (err) {
+        toast(String(err), true);
+      }
+    }),
+    actionBtn(
+      "✕",
+      "Remove host",
+      async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Remove host "${h.name}"?`)) return;
+        await invoke("delete_host", { id: h.id });
+        tabs.filter((t) => t.host.id === h.id).forEach(closeTab);
+        await loadHosts();
+      },
+      true,
+    ),
+  );
+
+  li.append(info, actions);
+  li.addEventListener("click", () => openSession(h));
+  return li;
 }
 
 function actionBtn(label, title, onClick, danger = false) {
@@ -111,10 +171,130 @@ document
   .querySelectorAll("#f-auth button")
   .forEach((b) => b.addEventListener("click", () => setAuthKind(b.dataset.value)));
 
-// X11 forwarding is only wired up on Linux clients (unix-gated backend).
-if (!navigator.platform.startsWith("Linux")) {
-  f("f-x11-row").hidden = true;
+// ---------- settings (theme + terminal font) ----------
+
+const settings = {
+  theme: localStorage.getItem("sshws.theme") || "dark",
+  font:
+    localStorage.getItem("sshws.font") ||
+    '"Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace',
+  size: Number(localStorage.getItem("sshws.fontsize")) || 13,
+};
+
+function applySettings() {
+  document.documentElement.dataset.theme = settings.theme;
+  for (const t of tabs) {
+    if (t.term) {
+      t.term.options.fontFamily = settings.font;
+      t.term.options.fontSize = settings.size;
+      if (t === activeTab) t.fit?.fit();
+    }
+  }
 }
+
+const settingsModal = document.getElementById("settings-modal");
+document.getElementById("settings-btn").addEventListener("click", () => {
+  f("s-theme").value = settings.theme;
+  f("s-font").value = settings.font;
+  f("s-size").value = settings.size;
+  settingsModal.hidden = false;
+});
+document.getElementById("settings-cancel").addEventListener("click", () => {
+  settingsModal.hidden = true;
+});
+document.getElementById("settings-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  settings.theme = f("s-theme").value;
+  settings.font = f("s-font").value.trim() || "monospace";
+  settings.size = Math.min(32, Math.max(8, Number(f("s-size").value) || 13));
+  localStorage.setItem("sshws.theme", settings.theme);
+  localStorage.setItem("sshws.font", settings.font);
+  localStorage.setItem("sshws.fontsize", String(settings.size));
+  applySettings();
+  settingsModal.hidden = true;
+});
+
+applySettings();
+
+// ---------- tunnels editor ----------
+
+let formTunnels = []; // rows being edited in the host modal
+
+const TUNNEL_KINDS = [
+  ["local", "local -L"],
+  ["remote", "remote -R"],
+  ["dynamic", "socks5 -D"],
+];
+
+function renderTunnelRows() {
+  const box = f("f-tunnels");
+  box.innerHTML = "";
+  for (const [i, t] of formTunnels.entries()) {
+    const row = document.createElement("div");
+    row.className = "tunnel-row";
+    const kind = document.createElement("select");
+    for (const [v, label] of TUNNEL_KINDS) {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = label;
+      kind.append(o);
+    }
+    kind.value = t.kind;
+    const inp = (cls, val, ph, num) => {
+      const el = document.createElement("input");
+      el.className = cls;
+      el.value = val;
+      el.placeholder = ph;
+      if (num) el.type = "number";
+      return el;
+    };
+    const bind = inp("t-bind", t.bind, "bind", false);
+    const lport = inp("t-lport", t.listen_port || "", "port", true);
+    const arrow = document.createElement("span");
+    arrow.textContent = "→";
+    const thost = inp("t-thost", t.target_host, "target host", false);
+    const tport = inp("t-tport", t.target_port || "", "port", true);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "t-del";
+    del.textContent = "✕";
+    del.addEventListener("click", () => {
+      readTunnelRows();
+      formTunnels.splice(i, 1);
+      renderTunnelRows();
+    });
+    const syncTarget = () => {
+      const dyn = kind.value === "dynamic";
+      thost.disabled = tport.disabled = dyn;
+    };
+    kind.addEventListener("change", syncTarget);
+    syncTarget();
+    row.append(kind, bind, lport, arrow, thost, tport, del);
+    box.append(row);
+  }
+}
+
+function readTunnelRows() {
+  formTunnels = [...f("f-tunnels").querySelectorAll(".tunnel-row")].map((row) => ({
+    kind: row.querySelector(".t-kind").value,
+    bind: row.querySelector(".t-bind").value.trim() || "127.0.0.1",
+    listen_port: Number(row.querySelector(".t-lport").value) || 0,
+    target_host: row.querySelector(".t-thost").value.trim(),
+    target_port: Number(row.querySelector(".t-tport").value) || 0,
+  }));
+}
+
+f("f-tunnel-add").addEventListener("click", () => {
+  readTunnelRows();
+  formTunnels.push({
+    kind: "local",
+    bind: "127.0.0.1",
+    listen_port: 0,
+    target_host: "",
+    target_port: 0,
+  });
+  renderTunnelRows();
+});
 
 function openHostModal(host) {
   editingId = host ? host.id : null;
@@ -130,12 +310,32 @@ function openHostModal(host) {
     kind === "key" ? host?.auth?.path ?? "~/.ssh/id_ed25519" : "~/.ssh/id_ed25519";
   f("f-passphrase").value = kind === "key" ? host?.auth?.passphrase ?? "" : "";
   f("f-x11").checked = !!host?.x11;
+  f("f-group").value = host?.group ?? "";
+  f("group-list").innerHTML = "";
+  for (const g of [...new Set(hosts.map((h) => h.group).filter(Boolean))].sort()) {
+    const o = document.createElement("option");
+    o.value = g;
+    f("group-list").append(o);
+  }
+  const jumpSel = f("f-jump");
+  jumpSel.innerHTML = '<option value="">none</option>';
+  for (const h of hosts) {
+    if (h.id === host?.id) continue;
+    const o = document.createElement("option");
+    o.value = h.id;
+    o.textContent = `${h.name} (${h.username}@${h.host})`;
+    jumpSel.append(o);
+  }
+  jumpSel.value = host?.jump ?? "";
+  formTunnels = (host?.tunnels ?? []).map((t) => ({ ...t }));
+  renderTunnelRows();
   hostModal.hidden = false;
   f("f-name").focus();
 }
 
 hostForm.addEventListener("submit", async (e) => {
   e.preventDefault();
+  readTunnelRows();
   const kind = authKind;
   let auth;
   if (kind === "password") {
@@ -157,6 +357,21 @@ hostForm.addEventListener("submit", async (e) => {
     username: f("f-user").value.trim(),
     auth,
     x11: f("f-x11").checked,
+    group: f("f-group").value.trim(),
+    jump: f("f-jump").value || null,
+    tunnels: formTunnels
+      .filter(
+        (t) =>
+          t.listen_port > 0 &&
+          (t.kind === "dynamic" || (t.target_host && t.target_port > 0)),
+      )
+      .map((t) => ({
+        ...t,
+        target_host: t.kind === "dynamic" ? "" : t.target_host,
+        target_port: t.kind === "dynamic" ? 0 : t.target_port,
+      })),
+    // Fields the form doesn't edit — keep what was loaded.
+    bookmarks: hosts.find((h) => h.id === editingId)?.bookmarks ?? [],
   };
   try {
     await invoke("save_host", { host });
@@ -165,6 +380,86 @@ hostForm.addEventListener("submit", async (e) => {
   } catch (err) {
     toast(String(err), true);
   }
+});
+
+/* ---------------- ssh config import ---------------- */
+
+const importModal = document.getElementById("import-modal");
+const importList = document.getElementById("import-list");
+
+document.getElementById("import-btn").addEventListener("click", async () => {
+  let entries;
+  try {
+    entries = await invoke("ssh_config_hosts");
+  } catch (err) {
+    toast(String(err), true);
+    return;
+  }
+  importList.innerHTML = "";
+  if (!entries.length) {
+    const p = document.createElement("p");
+    p.className = "hint";
+    p.textContent = "No named Host blocks found in ~/.ssh/config.";
+    importList.append(p);
+  }
+  const taken = new Set(hosts.map((h) => h.name));
+  for (const e of entries) {
+    const label = document.createElement("label");
+    label.className = "import-row";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = !taken.has(e.name);
+    cb.dataset.entry = JSON.stringify(e);
+    const text = document.createElement("span");
+    text.textContent = `${e.name} — ${e.username}@${e.host}:${e.port}` +
+      (e.identity_file ? ` (key ${e.identity_file})` : "");
+    if (taken.has(e.name)) {
+      cb.disabled = true;
+      text.textContent += "  · already imported";
+      label.classList.add("disabled");
+    }
+    label.append(cb, text);
+    importList.append(label);
+  }
+  importModal.hidden = false;
+});
+
+document.getElementById("import-cancel").addEventListener("click", () => {
+  importModal.hidden = true;
+});
+
+document.getElementById("import-ok").addEventListener("click", async () => {
+  const picked = [...importList.querySelectorAll("input:checked")].map((cb) =>
+    JSON.parse(cb.dataset.entry),
+  );
+  importModal.hidden = true;
+  let n = 0;
+  for (const e of picked) {
+    try {
+      await invoke("save_host", {
+        host: {
+          id: "",
+          name: e.name,
+          host: e.host,
+          port: e.port,
+          username: e.username,
+          auth: e.identity_file
+            ? { kind: "key", path: e.identity_file, passphrase: null }
+            : { kind: "agent" },
+          x11: false,
+          group: "",
+          jump: null,
+          tunnels: [],
+          bookmarks: [],
+        },
+      });
+      n++;
+    } catch (err) {
+      toast(String(err), true);
+    }
+  }
+  if (n) toast(`Imported ${n} host${n === 1 ? "" : "s"}`);
+  await loadHosts();
 });
 
 /* ---------------- secret prompt ---------------- */
@@ -194,19 +489,50 @@ document.getElementById("secret-cancel").addEventListener("click", () => {
   secretResolve = null;
 });
 
+// Keyboard-interactive (2FA) auth: during connect the backend may emit
+// prompt batches; answer each sequentially and reply with the answers.
+listen("ssh-auth-prompt", async (ev) => {
+  const { id, username, instructions, prompts } = ev.payload;
+  const answers = [];
+  for (const [text, echo] of prompts) {
+    const label =
+      text || instructions || `Credentials for ${username}`;
+    const a = echo ? await askText(label) : await askSecret(label);
+    if (a === null) {
+      answers.length = 0;
+      break;
+    }
+    answers.push(a ?? "");
+  }
+  invoke("auth_prompt_reply", { id, answers }).catch(() => {});
+});
+
 /* ---------------- generic text prompt ---------------- */
 
 const textModal = document.getElementById("text-modal");
 const textInput = document.getElementById("text-input");
 let textResolve = null;
 
-function askText(title) {
+function askText(title, prefill = "") {
   document.getElementById("text-title").textContent = title;
-  textInput.value = "";
+  textInput.value = prefill;
   textModal.hidden = false;
   textInput.focus();
+  textInput.select();
   return new Promise((resolve) => (textResolve = resolve));
 }
+
+const infoModal = document.getElementById("info-modal");
+
+function showInfo(title, text) {
+  document.getElementById("info-title").textContent = title;
+  document.getElementById("info-body").textContent = text;
+  infoModal.hidden = false;
+}
+
+document.getElementById("info-close").addEventListener("click", () => {
+  infoModal.hidden = true;
+});
 
 document.getElementById("text-form").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -238,7 +564,7 @@ function createTab(host, kind) {
   const pane = document.createElement("div");
   pane.className = "pane";
   panesEl.append(pane);
-  tabsEl.append(tabEl);
+  tabsEl.insertBefore(tabEl, bcBtn);
 
   const sess = {
     host,
@@ -260,6 +586,35 @@ function createTab(host, kind) {
     closeTab(sess);
   });
   tabEl.addEventListener("click", () => activateTab(sess));
+
+  // Drag a tab onto another tab to reorder.
+  tabEl.draggable = true;
+  tabEl.addEventListener("dragstart", (e) => {
+    dragTab = sess;
+    e.dataTransfer.setData("application/x-sshws-tab", "");
+    e.dataTransfer.effectAllowed = "move";
+  });
+  tabEl.addEventListener("dragover", (e) => {
+    if (e.dataTransfer.types.includes("application/x-sshws-tab") && dragTab !== sess) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      tabEl.classList.add("drop-target");
+    }
+  });
+  tabEl.addEventListener("dragleave", () => tabEl.classList.remove("drop-target"));
+  tabEl.addEventListener("drop", (e) => {
+    e.preventDefault();
+    tabEl.classList.remove("drop-target");
+    if (!dragTab || dragTab === sess) return;
+    tabs.splice(tabs.indexOf(dragTab), 1);
+    tabs.splice(tabs.indexOf(sess), 0, dragTab);
+    for (const t of tabs) tabsEl.append(t.tabEl);
+    tabsEl.append(bcBtn);
+  });
+  tabEl.addEventListener("dragend", () => {
+    dragTab = null;
+    for (const t of tabs) t.tabEl.classList.remove("drop-target");
+  });
   return sess;
 }
 
@@ -301,6 +656,14 @@ function markDead(sess, msg) {
   sess.dead = true;
   sess.dot.className = "dot dead";
   if (msg && sess.term) sess.term.write(`\r\n\x1b[90m[${msg}]\x1b[0m\r\n`);
+  if (sess.kind === "term" && !sess.reconnectEl) {
+    const b = document.createElement("button");
+    b.className = "reconnect-btn";
+    b.textContent = "Reconnect";
+    b.addEventListener("click", () => reconnectSsh(sess));
+    sess.pane.append(b);
+    sess.reconnectEl = b;
+  }
 }
 
 window.addEventListener("resize", () => {
@@ -313,21 +676,41 @@ document.addEventListener("contextmenu", (e) => e.preventDefault());
 window.addEventListener("keydown", (e) => {
   if (e.key === "F5" || (e.ctrlKey && (e.key === "r" || e.key === "R"))) {
     e.preventDefault();
+    return;
+  }
+  if (e.ctrlKey && (e.key === "PageDown" || e.key === "PageUp")) {
+    e.preventDefault();
+    cycleTab(e.key === "PageDown" ? 1 : -1);
   }
 });
+
+function cycleTab(dir) {
+  if (tabs.length < 2) return;
+  const i = tabs.indexOf(activeTab);
+  activateTab(tabs[(i + dir + tabs.length) % tabs.length]);
+}
 
 /* ---------------- terminals ---------------- */
 
 async function openSession(host) {
   const secret = await resolveSecret(host);
   if (secret === undefined) return;
+  const jumpSecret = await resolveJumpSecret(host);
+  if (jumpSecret === undefined) return;
   const sess = createTab(host, "term");
+  sess.jumpSecret = jumpSecret;
   activateTab(sess);
   buildTerminal(sess);
+  attachSsh(sess, secret);
+}
+
+/// (Re)connect a terminal session onto an existing tab.
+async function attachSsh(sess, secret) {
   try {
     const res = await invoke("connect_host", {
-      hostId: host.id,
+      hostId: sess.host.id,
       secret,
+      jumpSecret: sess.jumpSecret ?? null,
       cols: sess.term.cols,
       rows: sess.term.rows,
     });
@@ -343,6 +726,8 @@ async function openSession(host) {
       await listen(`ssh-exit-${sess.sid}`, () => markDead(sess, "connection closed")),
     ];
     sess.dot.className = "dot live";
+    sess.reconnectEl?.remove();
+    sess.reconnectEl = null;
     sess.term.focus();
   } catch (err) {
     sess.term.write(`\x1b[31m${String(err)}\x1b[0m\r\n`);
@@ -350,10 +735,23 @@ async function openSession(host) {
   }
 }
 
+async function reconnectSsh(sess) {
+  const secret = await resolveSecret(sess.host);
+  if (secret === undefined) return;
+  sess.reconnectEl?.remove();
+  sess.reconnectEl = null;
+  sess.dead = false;
+  sess.dot.className = "dot conn";
+  sess.term.write("\r\n\x1b[33m[reconnecting…]\x1b[0m\r\n");
+  sess.unlisteners.forEach((u) => u());
+  sess.unlisteners = [];
+  attachSsh(sess, secret);
+}
+
 function buildTerminal(sess) {
   const term = new Terminal({
-    fontFamily: '"Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace',
-    fontSize: 13,
+    fontFamily: settings.font,
+    fontSize: settings.size,
     cursorBlink: true,
     scrollback: 5000,
     theme: {
@@ -365,8 +763,27 @@ function buildTerminal(sess) {
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  if (window.SearchAddon) term.loadAddon((sess.search = new SearchAddon.SearchAddon()));
   term.open(sess.pane);
   fit.fit();
+
+  // OSC 7 cwd reports (injected by the backend PROMPT_COMMAND hook) let open
+  // SFTP panes for this host follow the shell's current directory.
+  term.parser?.registerOscHandler(7, (data) => {
+    onCwdReport(sess, data);
+    return true;
+  });
+  // OSC 133 command lifecycle (injected by the backend shell hook): C marks a
+  // command start, D;<exit-code> marks completion — notify on long commands.
+  term.parser?.registerOscHandler(133, (data) => {
+    if (data === "C") sess.cmdStart = Date.now();
+    else if (data.startsWith("D")) {
+      const code = data.split(";")[1] ?? "?";
+      if (sess.cmdStart && Date.now() - sess.cmdStart > 5000) notifyCmdDone(sess, code);
+      sess.cmdStart = null;
+    }
+    return true;
+  });
   sess.term = term;
   sess.fit = fit;
   sess.ro = new ResizeObserver(() => {
@@ -375,10 +792,15 @@ function buildTerminal(sess) {
   sess.ro.observe(sess.pane);
 
   term.onData((d) => {
-    if (sess.sid && !sess.dead) {
-      invoke("ssh_write", { sessionId: sess.sid, data: Array.from(encoder.encode(d)) }).catch(
-        () => {},
-      );
+    const data = Array.from(encoder.encode(d));
+    if (broadcastMode) {
+      for (const t of tabs) {
+        if (t.kind === "term" && t.sid && !t.dead) {
+          invoke("ssh_write", { sessionId: t.sid, data }).catch(() => {});
+        }
+      }
+    } else if (sess.sid && !sess.dead) {
+      invoke("ssh_write", { sessionId: sess.sid, data }).catch(() => {});
     }
   });
   term.onResize(({ cols, rows }) => {
@@ -399,12 +821,25 @@ function buildTerminal(sess) {
       { label: "Select all", action: () => term.selectAll() },
       { label: "Paste", action: () => pasteInto(sess) },
       "-",
+      { label: "Find…", action: () => openFindBar(sess) },
+      sess.logging
+        ? { label: "Stop recording", action: () => toggleLog(sess) }
+        : { label: "Log output to file", action: () => toggleLog(sess, "raw") },
+      sess.logging
+        ? null
+        : {
+            label: "Record session (.cast)",
+            action: () => toggleLog(sess, "cast"),
+          },
+      "-",
       { label: "Clear", action: () => term.clear() },
-    ]);
+    ].filter(Boolean));
   });
 
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey) return true;
+    if (e.type !== "keydown" || !e.ctrlKey) return true;
+    if (e.key === "PageDown" || e.key === "PageUp") return false;
+    if (!e.shiftKey) return true;
     const k = e.key.toLowerCase();
     if (k === "c") {
       const sel = term.getSelection();
@@ -415,8 +850,99 @@ function buildTerminal(sess) {
       pasteInto(sess);
       return false;
     }
+    if (k === "f") {
+      openFindBar(sess);
+      return false;
+    }
     return true;
   });
+}
+
+// ---------- terminal search / logging / notifications ----------
+
+function openFindBar(sess) {
+  if (!sess.search) return;
+  sess.findEl?.remove();
+  const bar = document.createElement("div");
+  bar.className = "find-bar";
+  const input = document.createElement("input");
+  input.placeholder = "Find in scrollback…";
+  const mk = (label, title, fn) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.title = title;
+    b.addEventListener("click", fn);
+    return b;
+  };
+  const close = () => {
+    bar.remove();
+    sess.findEl = null;
+    sess.term.focus();
+  };
+  input.addEventListener("input", () => {
+    if (input.value) sess.search.findNext(input.value);
+  });
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      if (!input.value) return;
+      (e.shiftKey ? sess.search.findPrevious : sess.search.findNext).call(
+        sess.search,
+        input.value,
+      );
+    } else if (e.key === "Escape") close();
+  });
+  bar.append(
+    input,
+    mk("↑", "Previous match (Shift+Enter)", () => input.value && sess.search.findPrevious(input.value)),
+    mk("↓", "Next match (Enter)", () => input.value && sess.search.findNext(input.value)),
+    mk("✕", "Close (Esc)", close),
+  );
+  sess.pane.append(bar);
+  sess.findEl = bar;
+  input.focus();
+}
+
+async function toggleLog(sess, format) {
+  if (!sess.sid || sess.dead) return;
+  if (sess.logging) {
+    await invoke("ssh_set_log", {
+      sessionId: sess.sid,
+      enable: false,
+      format: "raw",
+      cols: 0,
+      rows: 0,
+    }).catch(() => {});
+    sess.logging = false;
+    sess.term.write("\r\n\x1b[90m[recording stopped]\x1b[0m\r\n");
+    return;
+  }
+  const path = await invoke("ssh_set_log", {
+    sessionId: sess.sid,
+    enable: true,
+    format,
+    cols: sess.term.cols,
+    rows: sess.term.rows,
+  }).catch(() => null);
+  if (path) {
+    sess.logging = true;
+    sess.term.write(`\r\n\x1b[90m[recording to ${path}]\x1b[0m\r\n`);
+  }
+}
+
+function notifyCmdDone(sess, code) {
+  const msg = `${sess.host.name || sess.host.host}: command finished (exit ${code})`;
+  if (document.hidden && window.Notification) {
+    if (Notification.permission === "granted") {
+      new Notification("SSH Workspace", { body: msg });
+    } else if (Notification.permission === "default") {
+      Notification.requestPermission().then((p) => {
+        if (p === "granted") new Notification("SSH Workspace", { body: msg });
+      });
+    }
+  } else if (activeTab !== sess) {
+    toast(msg);
+  }
 }
 
 async function copyText(text) {
@@ -469,16 +995,25 @@ async function resolveSecret(host) {
   return null;
 }
 
+/** Secret for the host's jump/bastion, if one is configured. */
+async function resolveJumpSecret(host) {
+  const jh = host.jump ? hosts.find((h) => h.id === host.jump) : null;
+  if (!jh) return null;
+  return resolveSecret(jh);
+}
+
 /* ---------------- sftp file transfer ---------------- */
 
 async function openFtp(host) {
   const secret = await resolveSecret(host);
   if (secret === undefined) return;
+  const jumpSecret = await resolveJumpSecret(host);
+  if (jumpSecret === undefined) return;
   const sess = createTab(host, "ftp");
   activateTab(sess);
   let res;
   try {
-    res = await invoke("sftp_open", { hostId: host.id, secret });
+    res = await invoke("sftp_open", { hostId: host.id, secret, jumpSecret });
   } catch (err) {
     const d = document.createElement("div");
     d.className = "ft-error";
@@ -493,6 +1028,9 @@ async function openFtp(host) {
   sess.unlisteners = [
     await listen(`sftp-progress-${sess.sid}`, (e) => onXferProgress(sess, e.payload)),
     await listen(`sftp-done-${sess.sid}`, (e) => onXferDone(sess, e.payload)),
+    await listen(`sftp-edit-synced-${sess.sid}`, (e) =>
+      toast(`Saved → uploaded ${baseName(e.payload)}`),
+    ),
   ];
 }
 
@@ -543,6 +1081,41 @@ function ftHalf(sess, label, isRemote) {
   reload.title = "Refresh";
   bar.append(tag, up, hid, path, mk, reload);
 
+  // Remote pane: per-host path bookmarks (★ toggles cwd, ▾ lists them).
+  let starRefresh = null;
+  if (isRemote) {
+    const star = document.createElement("button");
+    star.className = "ft-btn";
+    star.title = "Bookmark this directory";
+    const bmBtn = document.createElement("button");
+    bmBtn.className = "ft-btn";
+    bmBtn.textContent = "▾";
+    bmBtn.title = "Bookmarks";
+    bar.append(star, bmBtn);
+
+    const bms = () => (sess.host.bookmarks ??= []);
+    const refreshStar = () => {
+      star.textContent = bms().includes(half.cwd) ? "★" : "☆";
+    };
+    star.addEventListener("click", async () => {
+      const i = bms().indexOf(half.cwd);
+      if (i >= 0) bms().splice(i, 1);
+      else bms().push(half.cwd);
+      try {
+        sess.host = await invoke("save_host", { host: sess.host });
+      } catch (e) {
+        toast(String(e), true);
+      }
+      refreshStar();
+    });
+    bmBtn.addEventListener("click", (e) => {
+      const items = bms().map((p) => ({ label: p, action: () => half.refresh(p) }));
+      if (!items.length) items.push({ label: "(no bookmarks)", disabled: true, action: () => {} });
+      showCtxMenu(e.clientX, e.clientY, items);
+    });
+    starRefresh = refreshStar;
+  }
+
   const list = document.createElement("div");
   list.className = "ft-list";
   el.append(bar, list);
@@ -558,6 +1131,7 @@ function ftHalf(sess, label, isRemote) {
     entries: [],
     showHidden: false,
     anchor: null,
+    syncStar: starRefresh,
   };
 
   half.refresh = async (p) => {
@@ -569,6 +1143,7 @@ function ftHalf(sess, label, isRemote) {
       path.value = res.path;
       half.entries = res.entries;
       renderEntries(half);
+      half.syncStar?.();
     } catch (e) {
       toast(String(e), true);
     }
@@ -636,7 +1211,7 @@ function ftHalf(sess, label, isRemote) {
     if (!raw) return;
     const data = JSON.parse(raw);
     if (data.isRemote === isRemote) return; // same side: ignore
-    for (const item of data.items) startTransfer(sess, data.isRemote, item, half.cwd);
+    transferItems(sess, data.isRemote, data.items, half.cwd);
   });
 
   return half;
@@ -792,10 +1367,46 @@ function fileMenuItems(sess, half) {
     label: n > 1 ? `${half.isRemote ? "Download" : "Upload"} ${n} items` : half.isRemote ? "Download" : "Upload",
     action: () => {
       const dest = half.isRemote ? sess.ft.local.cwd : sess.ft.remote.cwd;
-      for (const t of targets) startTransfer(sess, half.isRemote, t, dest);
+      transferItems(sess, half.isRemote, targets, dest);
     },
   });
-  // Future items: { label: "Rename", action: ... }, { label: "Properties", disabled: true }, ...
+  if (n === 1 && !targets[0].is_dir) {
+    items.push({
+      label: half.isRemote ? "Edit" : "Open",
+      action: () => editEntry(sess, half, targets[0]),
+    });
+  }
+  items.push({
+    label: "Rename…",
+    disabled: n !== 1,
+    action: () => renameEntry(sess, half, targets[0]),
+  });
+  items.push({
+    label: "Permissions…",
+    disabled: n !== 1,
+    action: () => chmodEntry(sess, half, targets[0]),
+  });
+  items.push({
+    label: "Copy path",
+    disabled: n !== 1,
+    action: () => copyText(targets[0].path),
+  });
+  if (!half.isRemote) {
+    items.push({
+      label: "Open containing folder",
+      disabled: n !== 1,
+      action: () =>
+        invoke("local_open", { path: parentPath(targets[0].path) }).catch((e) =>
+          toast(String(e), true),
+        ),
+    });
+  }
+  items.push("-");
+  items.push({
+    label: "Properties",
+    disabled: n !== 1,
+    action: () => showProps(targets[0]),
+  });
   items.push("-");
   items.push({
     label: n > 1 ? `Delete ${n} items` : "Delete",
@@ -803,6 +1414,95 @@ function fileMenuItems(sess, half) {
     action: () => deleteEntries(sess, half, targets),
   });
   return items;
+}
+
+/// Queue transfers after checking the destination pane for name conflicts.
+/// A smaller existing file is treated as a partial transfer: offer to resume.
+function transferItems(sess, fromRemote, items, dstDir) {
+  const destHalf = fromRemote ? sess.ft.local : sess.ft.remote;
+  const conflicts = items.filter((it) => destHalf.entries.some((e) => e.name === it.name));
+  let ok = items;
+  if (conflicts.length) {
+    const names = conflicts.map((c) => c.name).join(", ");
+    if (!confirm(`Overwrite ${conflicts.length} existing item(s)?\n${names}`)) {
+      ok = items.filter((i) => !conflicts.includes(i));
+    }
+  }
+  for (const item of ok) {
+    const dst = destHalf.entries.find((e) => e.name === item.name);
+    const partial =
+      dst && !item.is_dir && !dst.is_dir && dst.size > 0 && dst.size < item.size;
+    const resume =
+      partial &&
+      confirm(
+        `${item.name}: partial file exists (${fmtBytes(dst.size)} / ${fmtBytes(item.size)}). Resume?`,
+      );
+    startTransfer(sess, fromRemote, item, dstDir, resume);
+  }
+}
+
+async function editEntry(sess, half, ent) {
+  try {
+    if (half.isRemote) {
+      const local = await invoke("sftp_edit_open", { sessionId: sess.sid, path: ent.path });
+      await invoke("local_open", { path: local });
+      toast(`${ent.name} — saving the local copy uploads it back`);
+    } else {
+      await invoke("local_open", { path: ent.path });
+    }
+  } catch (e) {
+    toast(String(e), true);
+  }
+}
+
+async function renameEntry(sess, half, ent) {
+  const name = await askText(`Rename ${ent.name}`);
+  if (!name || name === ent.name) return;
+  const newPath = joinPath(parentPath(ent.path), name);
+  try {
+    if (half.isRemote) {
+      await invoke("sftp_rename", { sessionId: sess.sid, oldPath: ent.path, newPath });
+    } else {
+      await invoke("local_rename", { path: ent.path, newPath });
+    }
+    half.refresh(half.cwd);
+  } catch (e) {
+    toast(`Rename: ${e}`, true);
+  }
+}
+
+async function chmodEntry(sess, half, ent) {
+  const cur = ent.perm != null ? fmtOctal(ent.perm) : "";
+  const input = await askText(`Octal permissions for ${ent.name}`, cur);
+  if (!input) return;
+  const mode = parseInt(input, 8);
+  if (Number.isNaN(mode) || mode < 0 || mode > 0o7777) {
+    toast(`Invalid octal mode: ${input}`, true);
+    return;
+  }
+  try {
+    if (half.isRemote) {
+      await invoke("sftp_chmod", { sessionId: sess.sid, path: ent.path, mode });
+    } else {
+      await invoke("local_chmod", { path: ent.path, mode });
+    }
+    half.refresh(half.cwd);
+  } catch (e) {
+    toast(`chmod: ${e}`, true);
+  }
+}
+
+function showProps(ent) {
+  const lines = [
+    `Name:        ${ent.name}`,
+    `Path:        ${ent.path}`,
+    `Type:        ${ent.is_dir ? "Directory" : "File"}`,
+    `Size:        ${ent.is_dir ? "—" : `${fmtBytes(ent.size)} (${ent.size} B)`}`,
+    `Modified:    ${ent.mtime ? new Date(ent.mtime * 1000).toLocaleString() : "—"}`,
+    `Permissions: ${ent.perm != null ? `${fmtOctal(ent.perm)} (${fmtPerm(ent.perm)})` : "—"}`,
+    `Owner:       ${ent.uid != null ? `uid ${ent.uid}, gid ${ent.gid}` : "—"}`,
+  ];
+  showInfo(`Properties — ${ent.name}`, lines.join("\n"));
 }
 
 async function deleteEntries(sess, half, targets) {
@@ -822,7 +1522,7 @@ async function deleteEntries(sess, half, targets) {
   half.refresh(half.cwd);
 }
 
-function startTransfer(sess, fromRemote, item, dstDir) {
+function startTransfer(sess, fromRemote, item, dstDir, resume = false) {
   const op = `t${++sess.ft.seq}`;
   const dst = joinPath(dstDir, item.name);
   const line = document.createElement("div");
@@ -836,6 +1536,7 @@ function startTransfer(sess, fromRemote, item, dstDir) {
     upload: !fromRemote,
     src: item.path,
     dst,
+    resume,
   }).catch((e) => {
     line.textContent = `${item.name} — ${e}`;
     line.classList.add("err");
@@ -867,6 +1568,19 @@ function onXferDone(sess, d) {
   }
 }
 
+/// OSC 7 payload is "file://<host>/<path>" — refresh matching remote panes.
+function onCwdReport(sess, data) {
+  const i = data.indexOf("/", "file://".length);
+  if (i < 0) return;
+  const path = decodeURIComponent(data.slice(i));
+  for (const t of tabs) {
+    const remote = t.ft?.remote;
+    if (t.kind === "ftp" && t.host.id === sess.host.id && remote && remote.cwd !== path) {
+      remote.refresh(path);
+    }
+  }
+}
+
 /* ---------------- helpers ---------------- */
 
 function parentPath(p) {
@@ -888,6 +1602,15 @@ function fmtBytes(n) {
   const u = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.min(u.length - 1, Math.floor(Math.log2(n) / 10));
   return `${(n / 2 ** (10 * i)).toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+
+function fmtOctal(perm) {
+  return (perm & 0o7777).toString(8).padStart(4, "0");
+}
+
+function fmtPerm(perm) {
+  const bits = [0o400, 0o200, 0o100, 0o040, 0o020, 0o010, 0o004, 0o002, 0o001];
+  return bits.map((b, i) => (perm & b ? "rwx"[i % 3] : "-")).join("");
 }
 
 function fmtDate(ts) {

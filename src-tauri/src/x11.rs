@@ -12,6 +12,7 @@ use ssh2::Channel;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,6 +24,7 @@ use tauri::{AppHandle, Emitter};
 
 #[derive(Clone)]
 enum XTarget {
+    #[cfg(unix)]
     Unix(PathBuf),
     Tcp(String, u16),
 }
@@ -34,6 +36,7 @@ pub fn start(
     data_event: String,
     host: Host,
     secret: Option<String>,
+    jump: Option<(Host, Option<String>)>,
     known_hosts: PathBuf,
     tx: Sender<SshCommand>,
     alive: Arc<AtomicBool>,
@@ -47,7 +50,13 @@ pub fn start(
     let run = |note: &dyn Fn(String)| -> Result<(), String> {
         let (target, num) = local_display()?;
         let cookie = xauthority_cookie(&num);
-        let (sess, _) = establish(&host, secret, &known_hosts)?;
+        let (sess, _) = establish(
+            &host,
+            secret,
+            jump.as_ref().map(|(h, s)| (h, s.clone())),
+            Some(&app),
+            &known_hosts,
+        )?;
         // Still in blocking mode here: the listen request needs a server
         // round-trip, which would fail with WouldBlock if sent nonblocking.
         let (mut listener, port) = sess
@@ -98,6 +107,7 @@ pub fn start(
 }
 
 enum XStream {
+    #[cfg(unix)]
     Unix(UnixStream),
     Tcp(TcpStream),
 }
@@ -105,6 +115,7 @@ enum XStream {
 impl Read for XStream {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         match self {
+            #[cfg(unix)]
             XStream::Unix(s) => s.read(buf),
             XStream::Tcp(s) => s.read(buf),
         }
@@ -114,6 +125,7 @@ impl Read for XStream {
 impl Write for XStream {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
+            #[cfg(unix)]
             XStream::Unix(s) => s.write(buf),
             XStream::Tcp(s) => s.write(buf),
         }
@@ -126,12 +138,14 @@ impl Write for XStream {
 impl XStream {
     fn connect(target: &XTarget) -> std::io::Result<Self> {
         match target {
+            #[cfg(unix)]
             XTarget::Unix(p) => UnixStream::connect(p).map(XStream::Unix),
             XTarget::Tcp(h, p) => TcpStream::connect((h.as_str(), *p)).map(XStream::Tcp),
         }
     }
     fn set_nonblocking(&self, on: bool) -> std::io::Result<()> {
         match self {
+            #[cfg(unix)]
             XStream::Unix(s) => s.set_nonblocking(on),
             XStream::Tcp(s) => s.set_nonblocking(on),
         }
@@ -270,27 +284,33 @@ fn pad4(n: usize) -> usize {
     n.div_ceil(4) * 4
 }
 
-/// Resolve the local X endpoint: prefer DISPLAY, else pick the first
-/// /tmp/.X11-unix socket (covers Wayland sessions where XWayland runs but
-/// DISPLAY did not reach the app environment).
+/// Resolve the local X endpoint: prefer DISPLAY; on unix fall back to the
+/// first /tmp/.X11-unix socket (covers Wayland/XWayland when DISPLAY did
+/// not reach the app environment). On Windows there is no DISPLAY — use
+/// the VcXsrv/Xming default 127.0.0.1:6000.
 fn local_display() -> Result<(XTarget, String), String> {
     if let Ok(d) = std::env::var("DISPLAY") {
         if !d.trim().is_empty() {
             return parse_display(&d);
         }
     }
-    if let Ok(rd) = std::fs::read_dir("/tmp/.X11-unix") {
-        for e in rd.flatten() {
-            let fname = e.file_name();
-            let Some(num) = fname.to_str().and_then(|n| n.strip_prefix('X')) else {
-                continue;
-            };
-            if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) {
-                return Ok((XTarget::Unix(e.path()), num.to_string()));
+    #[cfg(unix)]
+    {
+        if let Ok(rd) = std::fs::read_dir("/tmp/.X11-unix") {
+            for e in rd.flatten() {
+                let fname = e.file_name();
+                let Some(num) = fname.to_str().and_then(|n| n.strip_prefix('X')) else {
+                    continue;
+                };
+                if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) {
+                    return Ok((XTarget::Unix(e.path()), num.to_string()));
+                }
             }
         }
+        return Err("no local X display found (DISPLAY unset, /tmp/.X11-unix empty)".into());
     }
-    Err("no local X display found (DISPLAY unset, /tmp/.X11-unix empty)".into())
+    #[cfg(not(unix))]
+    Ok((XTarget::Tcp("127.0.0.1".into(), 6000), "0".into()))
 }
 
 fn parse_display(d: &str) -> Result<(XTarget, String), String> {
@@ -302,20 +322,32 @@ fn parse_display(d: &str) -> Result<(XTarget, String), String> {
     if num.is_empty() {
         return Err(format!("cannot parse DISPLAY {d:?}"));
     }
-    if host_part.is_empty() || host_part == "unix" {
-        Ok((
-            XTarget::Unix(PathBuf::from(format!("/tmp/.X11-unix/X{num}"))),
-            num,
-        ))
-    } else {
-        let n: u16 = num
-            .parse()
-            .map_err(|_| format!("bad display number in {d:?}"))?;
-        let port = 6000u16
-            .checked_add(n)
-            .ok_or_else(|| format!("display number too large in {d:?}"))?;
-        Ok((XTarget::Tcp(host_part.to_string(), port), num))
+    if host_part.is_empty() || host_part == "unix" || host_part == "localhost" {
+        #[cfg(unix)]
+        {
+            return Ok((
+                XTarget::Unix(PathBuf::from(format!("/tmp/.X11-unix/X{num}"))),
+                num,
+            ));
+        }
+        #[cfg(not(unix))]
+        {
+            let n: u16 = num
+                .parse()
+                .map_err(|_| format!("bad display number in {d:?}"))?;
+            let port = 6000u16
+                .checked_add(n)
+                .ok_or_else(|| format!("display number too large in {d:?}"))?;
+            return Ok((XTarget::Tcp("127.0.0.1".into(), port), num));
+        }
     }
+    let n: u16 = num
+        .parse()
+        .map_err(|_| format!("bad display number in {d:?}"))?;
+    let port = 6000u16
+        .checked_add(n)
+        .ok_or_else(|| format!("display number too large in {d:?}"))?;
+    Ok((XTarget::Tcp(host_part.to_string(), port), num))
 }
 
 /// Find the MIT-MAGIC-COOKIE-1 for the display in XAUTHORITY (~/.Xauthority
