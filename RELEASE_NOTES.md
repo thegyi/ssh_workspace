@@ -55,7 +55,7 @@ forward ports, and run remote GUI apps via X11 forwarding.
 
 - **Linux:** `.deb`, `.rpm` — runtime deps `libssl3`, `libwebkit2gtk-4.1-0`, `libgtk-3-0`, `libdbus-1-3`
 - **Windows:** NSIS `.exe` installer + MSI
-- **macOS:** `.app` + `.dmg` (unsigned — right-click → Open on first launch)
+- **macOS:** `.dmg` + `.app` zipped (unsigned — right-click → Open on first launch)
 - Wayland-ready: desktop entry matches the app id for proper taskbar/pin icons
 
 ## CI

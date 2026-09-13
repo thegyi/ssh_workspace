@@ -143,13 +143,23 @@ jobs:
       - name: Build Tauri app
         run: npx tauri build --bundles app,dmg
 
+      # upload-artifact would spill the .app's loose files (Info.plist,
+      # icon.icns, the binary) into the release; ditto -c -k also preserves
+      # exec bits and symlinks that a plain artifact upload would lose.
+      - name: Archive .app bundle
+        run: |
+          cd src-tauri/target/release/bundle/macos
+          for app in *.app; do
+            ditto -c -k --keepParent "$app" "${app%.app}.zip"
+          done
+
       - name: Upload bundles
         uses: actions/upload-artifact@v6
         with:
           name: ssh-workspace-macos-bundles
           path: |
             src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app
+            src-tauri/target/release/bundle/macos/*.zip
           if-no-files-found: warn
 
   # On tag pushes (release-*/v*), collect the platform bundles built above
