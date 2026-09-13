@@ -193,11 +193,30 @@ function applySettings() {
 }
 
 const settingsModal = document.getElementById("settings-modal");
-document.getElementById("settings-btn").addEventListener("click", () => {
+let fontList = null;
+document.getElementById("settings-btn").addEventListener("click", async () => {
   f("s-theme").value = settings.theme;
-  f("s-font").value = settings.font;
   f("s-size").value = settings.size;
   settingsModal.hidden = false;
+  if (fontList === null) {
+    try {
+      fontList = await invoke("list_fonts");
+    } catch {
+      fontList = [];
+    }
+  }
+  const sel = f("s-font");
+  sel.innerHTML = "";
+  const names = fontList.includes(settings.font)
+    ? fontList
+    : [settings.font, ...fontList];
+  for (const name of names) {
+    const o = document.createElement("option");
+    o.value = name;
+    o.textContent = name;
+    sel.append(o);
+  }
+  sel.value = settings.font;
 });
 document.getElementById("settings-cancel").addEventListener("click", () => {
   settingsModal.hidden = true;

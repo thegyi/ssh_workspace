@@ -1,3 +1,4 @@
+mod fonts;
 mod hosts;
 mod secrets;
 mod sftp;
@@ -60,6 +61,12 @@ fn delete_host(state: State<AppState>, id: String) -> Result<(), String> {
 #[tauri::command]
 fn duplicate_host(state: State<AppState>, id: String) -> Result<Host, String> {
     state.store.duplicate(&id)
+}
+
+/// Installed font families for the terminal font picker (cached).
+#[tauri::command]
+fn list_fonts() -> Vec<String> {
+    fonts::list()
 }
 
 /// Parse `~/.ssh/config` Host blocks into importable entries.
@@ -358,6 +365,7 @@ fn main() {
             delete_host,
             duplicate_host,
             ssh_config_hosts,
+            list_fonts,
             reset_host_key,
             connect_host,
             ssh_write,
