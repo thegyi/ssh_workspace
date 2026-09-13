@@ -1,6 +1,6 @@
 {
   "name": "ssh-workspace",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "description": "SSH workspace: host manager + multi-terminal console (Tauri 2)",
   "scripts": {
