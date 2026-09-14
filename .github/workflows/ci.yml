@@ -21,7 +21,7 @@ jobs:
           curl -fsSL -o "$RUNNER_TEMP/actionlint-dl.bash" https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash
           bash "$RUNNER_TEMP/actionlint-dl.bash" 1.7.12 "$RUNNER_TEMP/bin"
       - name: Lint workflows
-        run: "$RUNNER_TEMP/bin/actionlint" .github/workflows/*.yml
+        run: $RUNNER_TEMP/bin/actionlint .github/workflows/*.yml
 
   check:
     name: Check & test
