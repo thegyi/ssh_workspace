@@ -16,6 +16,7 @@
       <div class="brand">SSH Workspace</div>
       <div class="sidebar-btns">
         <button id="add-host-btn" class="btn primary grow">+ Add host</button>
+        <button id="serial-btn" class="btn" title="Serial console">⌁</button>
         <button id="import-btn" class="btn" title="Import hosts from ~/.ssh/config">⇩</button>
         <button id="settings-btn" class="btn" title="Settings">⚙</button>
       </div>
@@ -170,6 +171,79 @@
         <div class="modal-actions">
           <button type="button" class="btn" id="settings-cancel">Cancel</button>
           <button type="submit" class="btn primary">Apply</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="serial-modal" class="modal-overlay" hidden>
+    <div class="modal">
+      <h3>Serial console</h3>
+      <form id="serial-form">
+        <div class="field">
+          <span class="field-label">Port</span>
+          <div class="row">
+            <select id="p-port" class="grow"></select>
+            <button type="button" class="btn" id="p-refresh" title="Refresh port list">⟳</button>
+          </div>
+        </div>
+        <div class="row">
+          <label class="grow">Baud rate
+            <select id="p-baud">
+              <option>9600</option>
+              <option>19200</option>
+              <option>38400</option>
+              <option>57600</option>
+              <option selected>115200</option>
+              <option>230400</option>
+              <option>460800</option>
+              <option>921600</option>
+            </select>
+          </label>
+          <label>Data bits
+            <select id="p-databits">
+              <option>5</option>
+              <option>6</option>
+              <option>7</option>
+              <option selected>8</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label class="grow">Parity
+            <select id="p-parity">
+              <option value="none" selected>None</option>
+              <option value="odd">Odd</option>
+              <option value="even">Even</option>
+            </select>
+          </label>
+          <label class="grow">Stop bits
+            <select id="p-stopbits">
+              <option selected>1</option>
+              <option>2</option>
+            </select>
+          </label>
+          <label class="grow">Flow control
+            <select id="p-flow">
+              <option value="none" selected>None</option>
+              <option value="hardware">Hardware (RTS/CTS)</option>
+              <option value="software">Software (XON/XOFF)</option>
+            </select>
+          </label>
+        </div>
+        <div class="row">
+          <label class="grow">Enter sends
+            <select id="p-eol">
+              <option value="cr" selected>CR</option>
+              <option value="lf">LF</option>
+              <option value="crlf">CR+LF</option>
+            </select>
+          </label>
+          <label class="check grow"><input type="checkbox" id="p-echo"> Local echo</label>
+        </div>
+        <div class="modal-actions">
+          <button type="button" class="btn" id="serial-cancel">Cancel</button>
+          <button type="submit" class="btn primary">Connect</button>
         </div>
       </form>
     </div>

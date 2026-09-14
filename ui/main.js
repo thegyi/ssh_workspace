@@ -697,11 +697,11 @@ function activateTab(sess) {
   });
 }
 
+const CLOSE_CMD = { term: "ssh_close", ftp: "sftp_close", serial: "serial_close" };
+
 function closeTab(sess) {
   if (sess.sid && !sess.dead) {
-    invoke(sess.kind === "ftp" ? "sftp_close" : "ssh_close", { sessionId: sess.sid }).catch(
-      () => {},
-    );
+    invoke(CLOSE_CMD[sess.kind] ?? "ssh_close", { sessionId: sess.sid }).catch(() => {});
   }
   sess.unlisteners.forEach((u) => u());
   sess.ro?.disconnect();
@@ -1041,7 +1041,7 @@ async function pasteInto(sess) {
   try {
     const text = await navigator.clipboard.readText();
     if (text && sess.sid && !sess.dead) {
-      invoke("ssh_write", {
+      invoke(sess.kind === "serial" ? "serial_write" : "ssh_write", {
         sessionId: sess.sid,
         data: Array.from(encoder.encode(text)),
       }).catch(() => {});
@@ -1066,6 +1066,179 @@ async function resolveJumpSecret(host) {
   const jh = host.jump ? hosts.find((h) => h.id === host.jump) : null;
   if (!jh) return null;
   return resolveSecret(jh);
+}
+
+/* ---------------- serial console ---------------- */
+
+const serialModal = document.getElementById("serial-modal");
+const serialPort = document.getElementById("p-port");
+
+document.getElementById("serial-btn").addEventListener("click", () => {
+  serialModal.hidden = false;
+  refreshSerialPorts();
+});
+document.getElementById("serial-cancel").addEventListener("click", () => {
+  serialModal.hidden = true;
+});
+document.getElementById("p-refresh").addEventListener("click", refreshSerialPorts);
+
+async function refreshSerialPorts() {
+  let ports = [];
+  try {
+    ports = await invoke("serial_ports");
+  } catch (e) {
+    toast(String(e), true);
+  }
+  const prev = serialPort.value;
+  serialPort.innerHTML = "";
+  for (const p of ports) {
+    const o = document.createElement("option");
+    o.value = p.name;
+    o.textContent = p.description ? `${p.name} — ${p.description}` : p.name;
+    serialPort.append(o);
+  }
+  if (!ports.length) {
+    const o = document.createElement("option");
+    o.textContent = "(no serial ports found)";
+    o.disabled = true;
+    serialPort.append(o);
+  } else if ([...serialPort.options].some((o) => o.value === prev)) {
+    serialPort.value = prev;
+  }
+}
+
+document.getElementById("serial-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const port = serialPort.value;
+  if (!port) {
+    toast("No serial port selected", true);
+    return;
+  }
+  serialModal.hidden = true;
+  openSerial(port, {
+    baud: +document.getElementById("p-baud").value,
+    dataBits: +document.getElementById("p-databits").value,
+    parity: document.getElementById("p-parity").value,
+    stopBits: +document.getElementById("p-stopbits").value,
+    flow: document.getElementById("p-flow").value,
+    eol: document.getElementById("p-eol").value,
+    echo: document.getElementById("p-echo").checked,
+  });
+});
+
+async function openSerial(port, cfg) {
+  const sess = createTab({ id: `serial:${port}`, name: port }, "serial");
+  sess.serialCfg = cfg;
+  activateTab(sess);
+  buildSerialTerm(sess);
+  try {
+    sess.sid = await invoke("serial_connect", {
+      port,
+      baud: cfg.baud,
+      dataBits: cfg.dataBits,
+      parity: cfg.parity,
+      stopBits: cfg.stopBits,
+      flow: cfg.flow,
+    });
+    sess.dot.className = "dot live";
+  } catch (err) {
+    sess.term.write(`\x1b[31m${String(err)}\x1b[0m\r\n`);
+    markDead(sess, null);
+    return;
+  }
+  sess.unlisteners = [
+    await listen(`serial-data-${sess.sid}`, (ev) =>
+      sess.term.write(new Uint8Array(ev.payload)),
+    ),
+    await listen(`serial-exit-${sess.sid}`, (ev) =>
+      markDead(sess, ev.payload ? `port closed: ${ev.payload}` : "port closed"),
+    ),
+  ];
+}
+
+function buildSerialTerm(sess) {
+  const term = new Terminal({
+    fontFamily: settings.font,
+    fontSize: settings.size,
+    cursorBlink: true,
+    scrollback: 5000,
+    theme: {
+      background: "#0d1117",
+      foreground: "#d7dae0",
+      cursor: "#d7dae0",
+      selectionBackground: "#264f78",
+    },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  if (window.SearchAddon) term.loadAddon((sess.search = new SearchAddon.SearchAddon()));
+  term.open(sess.pane);
+  fit.fit();
+  sess.term = term;
+  sess.fit = fit;
+  sess.ro = new ResizeObserver(() => {
+    if (sess.pane.offsetParent !== null) fit.fit();
+  });
+  sess.ro.observe(sess.pane);
+
+  term.onData((d) => {
+    const cfg = sess.serialCfg ?? {};
+    if (cfg.echo) term.write(d);
+    if (!sess.sid || sess.dead) return;
+    // xterm emits "\r" for Enter; map it to the configured line ending.
+    let out = d;
+    if (d === "\r") {
+      if (cfg.eol === "lf") out = "\n";
+      else if (cfg.eol === "crlf") out = "\r\n";
+    }
+    invoke("serial_write", {
+      sessionId: sess.sid,
+      data: Array.from(encoder.encode(out)),
+    }).catch(() => {});
+  });
+
+  sess.pane.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const sel = term.getSelection();
+    showCtxMenu(e.clientX, e.clientY, [
+      { label: "Copy", disabled: !sel, action: () => copyText(sel) },
+      { label: "Copy all output", action: () => copyText(getAllText(term)) },
+      "-",
+      { label: "Select all", action: () => term.selectAll() },
+      { label: "Paste", action: () => pasteInto(sess) },
+      "-",
+      { label: "Find…", action: () => openFindBar(sess) },
+      {
+        label: "Send BREAK",
+        action: () =>
+          sess.sid && invoke("serial_break", { sessionId: sess.sid }).catch(() => {}),
+      },
+      "-",
+      { label: "Clear", action: () => term.clear() },
+    ]);
+  });
+
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.type !== "keydown" || !e.ctrlKey) return true;
+    if (e.key === "PageDown" || e.key === "PageUp") return false;
+    if (!e.shiftKey) return true;
+    const k = e.key.toLowerCase();
+    if (k === "c") {
+      const sel = term.getSelection();
+      if (sel) copyText(sel);
+      return false;
+    }
+    if (k === "v") {
+      pasteInto(sess);
+      return false;
+    }
+    if (k === "f") {
+      openFindBar(sess);
+      return false;
+    }
+    return true;
+  });
 }
 
 /* ---------------- sftp file transfer ---------------- */

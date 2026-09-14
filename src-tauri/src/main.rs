@@ -1,6 +1,11 @@
+// GUI subsystem in release builds — without this Windows spawns a console
+// window next to the app. Debug builds keep the console for logging.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod fonts;
 mod hosts;
 mod secrets;
+mod serial;
 mod sftp;
 mod ssh;
 mod tunnels;
@@ -8,6 +13,7 @@ mod x11;
 
 use hosts::{Host, HostStore};
 use serde::Serialize;
+use serial::{PortInfo, SerialCfg, SerialManager};
 use sftp::{ListResult, SftpManager};
 use ssh::{SshCommand, SshManager};
 use std::path::PathBuf;
@@ -17,6 +23,7 @@ struct AppState {
     store: HostStore,
     ssh: SshManager,
     sftp: SftpManager,
+    serial: SerialManager,
     known_hosts: PathBuf,
 }
 
@@ -339,12 +346,61 @@ fn local_open(path: String) -> Result<(), String> {
     sftp::local_open(&path)
 }
 
+/* ---------------- serial console ---------------- */
+
+/// Enumerate serial devices for the modal picker.
+#[tauri::command]
+fn serial_ports() -> Vec<PortInfo> {
+    serial::list_ports()
+}
+
+/// Open a serial port with the given UART settings. Returns the session
+/// id used by `serial-data-<id>`/`serial-exit-<id>` events.
+#[tauri::command]
+fn serial_connect(
+    app: AppHandle,
+    state: State<AppState>,
+    port: String,
+    baud: u32,
+    data_bits: u8,
+    parity: String,
+    stop_bits: u8,
+    flow: String,
+) -> Result<String, String> {
+    let cfg = SerialCfg {
+        baud,
+        data_bits,
+        stop_bits,
+        parity,
+        flow,
+    };
+    state.serial.connect(&app, &port, &cfg)
+}
+
+#[tauri::command]
+fn serial_write(state: State<AppState>, session_id: String, data: Vec<u8>) -> Result<(), String> {
+    state.serial.write(&session_id, data)
+}
+
+/// RS-232 break condition (console attention signal).
+#[tauri::command]
+fn serial_break(state: State<AppState>, session_id: String) -> Result<(), String> {
+    state.serial.send_break(&session_id)
+}
+
+#[tauri::command]
+fn serial_close(state: State<AppState>, session_id: String) -> Result<(), String> {
+    state.serial.close(&session_id);
+    Ok(())
+}
+
 /// Called once by the frontend on startup. If the webview was reloaded, any
 /// sessions still in the managers are unreachable orphans — kill them.
 #[tauri::command]
 fn reset_sessions(state: State<AppState>) {
     state.ssh.disconnect_all();
     state.sftp.disconnect_all();
+    state.serial.disconnect_all();
 }
 
 fn main() {
@@ -359,6 +415,7 @@ fn main() {
         store: HostStore::load(config_dir.join("hosts.json")),
         ssh: SshManager::new(),
         sftp: SftpManager::new(),
+        serial: SerialManager::new(),
         known_hosts,
     };
 
@@ -394,6 +451,11 @@ fn main() {
             local_rename,
             local_chmod,
             local_open,
+            serial_ports,
+            serial_connect,
+            serial_write,
+            serial_break,
+            serial_close,
             reset_sessions,
         ])
         .run(tauri::generate_context!())
