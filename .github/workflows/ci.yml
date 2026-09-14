@@ -13,9 +13,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # actionlint checks workflow syntax, expression types, job
-      # dependencies, and runs shellcheck on run: steps.
-      - uses: rhysd/actionlint@v1
+      # actionlint ships as a binary, not an action — install a pinned
+      # version via the project's download script.
+      - name: Install actionlint
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP/bin"
+      - name: Lint workflows
+        run: "$RUNNER_TEMP/bin/actionlint" .github/workflows/*.yml
 
   check:
     name: Check & test
