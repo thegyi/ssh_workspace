@@ -568,6 +568,39 @@ pub fn local_list(path: &str) -> Result<ListResult, String> {
     })
 }
 
+/// Stat a single local path (used to resolve OS drag-and-drop file lists,
+/// which arrive as bare paths without metadata).
+pub fn local_stat(path: &str) -> Result<FileEntry, String> {
+    let p = expand_tilde(path);
+    let meta =
+        fs::metadata(&p).map_err(|e| format!("cannot stat {}: {e}", p.display()))?;
+    #[cfg(unix)]
+    let (perm, uid, gid) = {
+        use std::os::unix::fs::MetadataExt;
+        (Some(meta.mode() & 0o7777), Some(meta.uid()), Some(meta.gid()))
+    };
+    #[cfg(not(unix))]
+    let (perm, uid, gid) = (None, None, None);
+    Ok(FileEntry {
+        name: p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| p.display().to_string()),
+        path: p.display().to_string(),
+        is_dir: meta.is_dir(),
+        size: meta.len(),
+        mtime: meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        perm,
+        uid,
+        gid,
+    })
+}
+
 /// Recursively delete a remote path. Uses lstat so a symlinked dir is
 /// unlinked rather than traversed into.
 fn delete_remote(sftp: &Sftp, path: &Path) -> Result<(), String> {

@@ -532,6 +532,47 @@ listen("ssh-auth-prompt", async (ev) => {
   invoke("auth_prompt_reply", { id, answers }).catch(() => {});
 });
 
+// Files dragged from the OS file manager: Tauri intercepts native drops
+// (dragDropEnabled) and emits tauri://drag-* events instead of HTML5
+// drop events — the position is in physical pixels, so scale it back to
+// CSS pixels for elementFromPoint. Drops upload into the remote pane's
+// current directory; the local pane ignores them (files are local already).
+let dragHoverEl = null;
+
+function dragHalf(position) {
+  const dpr = window.devicePixelRatio || 1;
+  const el = document.elementFromPoint(position.x / dpr, position.y / dpr);
+  return el?.closest?.(".ft-list")?.ftHalf ?? null;
+}
+
+listen("tauri://drag-over", (ev) => {
+  const half = dragHalf(ev.payload.position);
+  const el = half?.isRemote ? half.listEl : null;
+  if (el !== dragHoverEl) {
+    dragHoverEl?.classList.remove("drop-target");
+    el?.classList.add("drop-target");
+    dragHoverEl = el;
+  }
+});
+listen("tauri://drag-leave", () => {
+  dragHoverEl?.classList.remove("drop-target");
+  dragHoverEl = null;
+});
+listen("tauri://drag-drop", async (ev) => {
+  dragHoverEl?.classList.remove("drop-target");
+  dragHoverEl = null;
+  const half = dragHalf(ev.payload.position);
+  if (!half?.isRemote || !ev.payload.paths?.length) return;
+  const items = (
+    await Promise.all(
+      ev.payload.paths.map((path) =>
+        invoke("local_stat", { path }).catch(() => null),
+      ),
+    )
+  ).filter(Boolean);
+  if (items.length) transferItems(half.sess, false, items, half.cwd);
+});
+
 /* ---------------- generic text prompt ---------------- */
 
 const textModal = document.getElementById("text-modal");
@@ -1158,6 +1199,8 @@ function ftHalf(sess, label, isRemote) {
     anchor: null,
     syncStar: starRefresh,
   };
+  // Lets the global tauri://drag-* handlers map a DOM hit to this pane.
+  list.ftHalf = half;
 
   half.refresh = async (p) => {
     try {

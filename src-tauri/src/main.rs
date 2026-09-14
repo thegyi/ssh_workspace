@@ -305,6 +305,11 @@ async fn sftp_edit_open(
 }
 
 #[tauri::command]
+fn local_stat(path: String) -> Result<sftp::FileEntry, String> {
+    sftp::local_stat(&path)
+}
+
+#[tauri::command]
 fn local_list(path: String) -> Result<ListResult, String> {
     sftp::local_list(&path)
 }
@@ -376,6 +381,7 @@ fn main() {
             sftp_open,
             sftp_list,
             sftp_transfer,
+            local_stat,
             sftp_close,
             sftp_mkdir,
             sftp_delete,
