@@ -269,3 +269,154 @@ pub fn parse_ssh_config(path: &Path) -> Vec<SshConfigEntry> {
     }
     entries
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sshws-test-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn host(name: &str) -> Host {
+        Host {
+            id: String::new(),
+            name: name.into(),
+            host: "example.com".into(),
+            port: 22,
+            username: "u".into(),
+            auth: AuthMethod::Agent,
+            x11: false,
+            bookmarks: vec![],
+            group: String::new(),
+            jump: None,
+            tunnels: vec![],
+        }
+    }
+
+    #[test]
+    fn store_crud_and_persist() {
+        let dir = tmpdir("store");
+        let path = dir.join("hosts.json");
+        let store = HostStore::load(path.clone());
+        assert!(store.list().is_empty());
+
+        let saved = store.upsert(host("web")).unwrap();
+        assert!(!saved.id.is_empty());
+        assert_eq!(store.get(&saved.id).unwrap().name, "web");
+
+        // Survives a reload from disk.
+        let reloaded = HostStore::load(path);
+        assert_eq!(reloaded.list().len(), 1);
+        assert_eq!(reloaded.get(&saved.id).unwrap().host, "example.com");
+
+        reloaded.remove(&saved.id).unwrap();
+        assert!(reloaded.list().is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_keeps_secret_when_new_value_is_none() {
+        // Editing a host without re-entering the password must not wipe the
+        // stored secret (whatever form protect() left it in).
+        let dir = tmpdir("keep");
+        let store = HostStore::load(dir.join("hosts.json"));
+        let mut h = host("web");
+        h.auth = AuthMethod::Password {
+            password: Some("pw".into()),
+        };
+        let saved = store.upsert(h).unwrap();
+        let stored = match &store.get(&saved.id).unwrap().auth {
+            AuthMethod::Password { password } => password.clone(),
+            _ => unreachable!(),
+        };
+        assert!(stored.is_some());
+
+        let mut edit = store.get(&saved.id).unwrap();
+        edit.name = "renamed".into();
+        edit.auth = AuthMethod::Password { password: None };
+        let out = store.upsert(edit).unwrap();
+        match out.auth {
+            AuthMethod::Password { password } => assert_eq!(password, stored),
+            _ => panic!("auth kind changed"),
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_gets_new_id_and_copy_name() {
+        let dir = tmpdir("dup");
+        let store = HostStore::load(dir.join("hosts.json"));
+        let saved = store.upsert(host("prod")).unwrap();
+        let dup = store.duplicate(&saved.id).unwrap();
+        assert_eq!(dup.name, "prod copy");
+        assert_ne!(dup.id, saved.id);
+        assert_eq!(dup.host, saved.host);
+        assert_eq!(store.list().len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tilde_expands_home_only_at_start() {
+        assert_eq!(expand_tilde("/abs/x"), PathBuf::from("/abs/x"));
+        assert_eq!(expand_tilde("~other/x"), PathBuf::from("~other/x"));
+        assert_eq!(expand_tilde("rel"), PathBuf::from("rel"));
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(expand_tilde("~/k"), home.join("k"));
+    }
+
+    #[test]
+    fn ssh_config_parses_basic_blocks() {
+        let dir = tmpdir("cfg");
+        let path = dir.join("config");
+        fs::write(
+            &path,
+            "# comment\n\
+             Host web\n  HostName 10.0.0.1\n  User deploy\n  Port 2222\n  IdentityFile ~/.ssh/web_ed25519\n\n\
+             Host db\n  HostName=db.internal\n  User=root\n",
+        )
+        .unwrap();
+        let entries = parse_ssh_config(&path);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "web");
+        assert_eq!(entries[0].host, "10.0.0.1");
+        assert_eq!(entries[0].username, "deploy");
+        assert_eq!(entries[0].port, 2222);
+        assert_eq!(
+            entries[0].identity_file.as_deref(),
+            Some("~/.ssh/web_ed25519")
+        );
+        // "Key=value" syntax is accepted.
+        assert_eq!(entries[1].host, "db.internal");
+        assert_eq!(entries[1].username, "root");
+        assert_eq!(entries[1].port, 22);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ssh_config_skips_wildcards_and_match() {
+        let dir = tmpdir("cfg2");
+        let path = dir.join("config");
+        fs::write(
+            &path,
+            "Host *\n  User ignored\n\n\
+             Host !secure *.example.com\n  User multi\n\n\
+             Match user admin\n  User nope\n\n\
+             Host real\n  User yes\n",
+        )
+        .unwrap();
+        let entries = parse_ssh_config(&path);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "real");
+        assert_eq!(entries[0].username, "yes");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ssh_config_missing_file_returns_empty() {
+        assert!(parse_ssh_config(Path::new("/nonexistent-sshws-cfg")).is_empty());
+    }
+}

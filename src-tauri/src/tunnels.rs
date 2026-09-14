@@ -270,3 +270,69 @@ fn socks5_target(sock: &mut TcpStream) -> std::io::Result<(String, u16)> {
     sock.write_all(&[5, 0, 0, 1, 0, 0, 0, 0, 0, 0])?; // success
     Ok((host, u16::from_be_bytes(p)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// Drive socks5_target against a scripted client over loopback; returns
+    /// the parsed (host, port) and everything the server wrote back.
+    fn socks_roundtrip(req: &[u8]) -> std::io::Result<((String, u16), Vec<u8>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        client.write_all(req).unwrap();
+        let res = socks5_target(&mut server);
+        // Closing the server side lets the client read the full reply.
+        drop(server);
+        let mut reply = Vec::new();
+        client.read_to_end(&mut reply).unwrap();
+        res.map(|hp| (hp, reply))
+    }
+
+    #[test]
+    fn socks5_ipv4_connect() {
+        // greeting: v5, 1 method (no-auth); request: CONNECT 1.2.3.4:80
+        let req = [5, 1, 0, 5, 1, 0, 1, 1, 2, 3, 4, 0, 80];
+        let ((host, port), reply) = socks_roundtrip(&req).unwrap();
+        assert_eq!(host, "1.2.3.4");
+        assert_eq!(port, 80);
+        // method pick [5,0] + success reply [5,0,0,1,0,0,0,0,0,0]
+        assert_eq!(reply, vec![5, 0, 5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn socks5_domain_connect() {
+        let mut req = vec![5, 1, 0, 5, 1, 0, 3, 11];
+        req.extend_from_slice(b"example.com");
+        req.extend_from_slice(&443u16.to_be_bytes());
+        let ((host, port), _) = socks_roundtrip(&req).unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn socks5_rejects_auth_only_client() {
+        // Client offers only method 2 (user/pass) — no no-auth method.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        client.write_all(&[5, 1, 2]).unwrap();
+        assert!(socks5_target(&mut server).is_err());
+    }
+
+    #[test]
+    fn socks5_rejects_wrong_version() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        client.write_all(&[4, 1, 0]).unwrap();
+        assert!(socks5_target(&mut server).is_err());
+    }
+}

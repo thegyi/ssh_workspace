@@ -945,3 +945,97 @@ fn open_cmd(p: &Path) -> std::io::Result<()> {
             .map(|_| ())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sshws-sftp-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn ent(name: &str, is_dir: bool) -> FileEntry {
+        FileEntry {
+            name: name.into(),
+            path: format!("/x/{name}"),
+            is_dir,
+            size: 0,
+            mtime: 0,
+            perm: None,
+            uid: None,
+            gid: None,
+        }
+    }
+
+    #[test]
+    fn mkdir_list_stat_rename_delete_roundtrip() {
+        let dir = tmpdir("ops");
+        let sub = dir.join("sub").display().to_string();
+        local_mkdir(&sub).unwrap();
+
+        let file = dir.join("a.txt");
+        fs::write(&file, b"hello").unwrap();
+
+        let res = local_list(&dir.display().to_string()).unwrap();
+        assert_eq!(res.entries.len(), 2);
+        assert_eq!(res.entries[0].name, "sub");
+        assert!(res.entries[0].is_dir);
+        assert_eq!(res.entries[1].name, "a.txt");
+
+        let st = local_stat(&file.display().to_string()).unwrap();
+        assert!(!st.is_dir);
+        assert_eq!(st.size, 5);
+        assert_eq!(st.name, "a.txt");
+
+        let renamed = dir.join("b.txt").display().to_string();
+        local_rename(&file.display().to_string(), &renamed).unwrap();
+        assert!(!file.exists());
+        assert_eq!(local_stat(&renamed).unwrap().name, "b.txt");
+
+        local_delete(&renamed).unwrap();
+        local_delete(&sub).unwrap();
+        assert!(local_list(&dir.display().to_string()).unwrap().entries.is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_list_shows_hidden_files() {
+        let dir = tmpdir("hid");
+        fs::write(dir.join(".secret"), b"x").unwrap();
+        fs::write(dir.join("visible"), b"x").unwrap();
+        let res = local_list(&dir.display().to_string()).unwrap();
+        assert!(res.entries.iter().any(|e| e.name == ".secret"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_delete_removes_dir_recursively() {
+        let dir = tmpdir("del");
+        fs::create_dir_all(dir.join("d/x")).unwrap();
+        fs::write(dir.join("d/f"), b"x").unwrap();
+        local_delete(&dir.join("d").display().to_string()).unwrap();
+        assert!(!dir.join("d").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn local_stat_errors_on_missing_path() {
+        assert!(local_stat("/nonexistent-sshws-path-xyz").is_err());
+    }
+
+    #[test]
+    fn sort_dirs_first_then_case_insensitive_name() {
+        let mut v = vec![
+            ent("banana", false),
+            ent("Zulu", true),
+            ent("apple", false),
+            ent("Mango", true),
+        ];
+        sort_entries(&mut v);
+        let names: Vec<&str> = v.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["Mango", "Zulu", "apple", "banana"]);
+    }
+}

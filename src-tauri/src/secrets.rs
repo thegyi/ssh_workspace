@@ -72,3 +72,59 @@ pub fn delete_host(host_id: &str) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_format_is_host_field() {
+        assert_eq!(key("h1", "password"), "h1:password");
+        assert_eq!(key("h1", "passphrase"), "h1:passphrase");
+    }
+
+    #[test]
+    fn resolve_passes_plaintext_through() {
+        assert_eq!(resolve_opt(&None), None);
+        assert_eq!(
+            resolve_opt(&Some("s3cret".into())),
+            Some("s3cret".into())
+        );
+        // Empty string is a real value, not a marker.
+        assert_eq!(resolve_opt(&Some(String::new())), Some(String::new()));
+    }
+
+    #[test]
+    fn resolve_unresolvable_marker_is_none() {
+        // No backend holds an entry for this fake id, so this is None whether
+        // or not a keyring daemon is running on the test machine.
+        let v = Some(format!("{MARKER_PREFIX}nonexistent-host-xyz:password"));
+        assert_eq!(resolve_opt(&v), None);
+    }
+
+    #[test]
+    fn protect_leaves_existing_markers_untouched() {
+        // A value that is already a marker must not be re-stored/rewritten.
+        let marker = format!("{MARKER_PREFIX}h1:password");
+        let mut h = Host {
+            id: "h1".into(),
+            name: "x".into(),
+            host: "x".into(),
+            port: 22,
+            username: "u".into(),
+            auth: AuthMethod::Password {
+                password: Some(marker.clone()),
+            },
+            x11: false,
+            bookmarks: vec![],
+            group: String::new(),
+            jump: None,
+            tunnels: vec![],
+        };
+        protect(&mut h);
+        match h.auth {
+            AuthMethod::Password { password } => assert_eq!(password, Some(marker)),
+            _ => unreachable!(),
+        }
+    }
+}

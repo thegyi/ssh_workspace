@@ -793,3 +793,55 @@ fn which(bin: &str) -> bool {
         .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
         .unwrap_or(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn kh_file(tag: &str, content: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("sshws-kh-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let kh = dir.join("known_hosts");
+        fs::write(&kh, content).unwrap();
+        (dir, kh)
+    }
+
+    #[test]
+    fn reset_removes_host_keeps_others() {
+        let (dir, kh) = kh_file(
+            "basic",
+            "# comment\nexample.com ssh-ed25519 AAAA\nother.com ssh-rsa BBBB\n[example.com]:2222 ssh-ed25519 CCCC\n",
+        );
+        let removed = reset_host_key(&kh, "example.com", 22).unwrap();
+        assert!(removed >= 1);
+        let content = fs::read_to_string(&kh).unwrap();
+        assert!(!content.contains("example.com ssh-ed25519"));
+        assert!(content.contains("other.com"));
+        // [host]:port lines are a different pattern — untouched by port 22.
+        assert!(content.contains("[example.com]:2222"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_removes_port_variant() {
+        let (dir, kh) = kh_file(
+            "port",
+            "example.com ssh-ed25519 AAAA\n[example.com]:2222 ssh-ed25519 CCCC\n",
+        );
+        reset_host_key(&kh, "example.com", 2222).unwrap();
+        let content = fs::read_to_string(&kh).unwrap();
+        assert!(!content.contains("ssh-ed25519 AAAA"));
+        assert!(!content.contains("[example.com]:2222"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn reset_missing_file_is_zero() {
+        assert_eq!(
+            reset_host_key(Path::new("/nonexistent-sshws-kh"), "h", 22).unwrap(),
+            0
+        );
+    }
+}

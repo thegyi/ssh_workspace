@@ -8,6 +8,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  lint-workflows:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # actionlint checks workflow syntax, expression types, job
+      # dependencies, and runs shellcheck on run: steps.
+      - uses: rhysd/actionlint@v1
+
   check:
     name: Check & test
     runs-on: ubuntu-latest
@@ -36,6 +45,9 @@ jobs:
 
       - name: Check frontend JS syntax
         run: node --check ui/main.js
+
+      - name: Frontend unit tests
+        run: node --test ui/util.test.js
 
       - name: Cargo check
         working-directory: src-tauri
