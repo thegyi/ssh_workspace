@@ -726,6 +726,7 @@ function markDead(sess, msg) {
     const b = document.createElement("button");
     b.className = "reconnect-btn";
     b.textContent = "Reconnect";
+    b.title = "Reconnect (press R)";
     b.addEventListener("click", () => reconnectSsh(sess));
     sess.pane.append(b);
     sess.reconnectEl = b;
@@ -903,7 +904,20 @@ function buildTerminal(sess) {
   });
 
   term.attachCustomKeyEventHandler((e) => {
-    if (e.type !== "keydown" || !e.ctrlKey) return true;
+    if (e.type !== "keydown") return true;
+    // Plain R reconnects while the reconnect button is visible — the dead
+    // terminal swallows input anyway, so the key is free to reuse.
+    if (
+      sess.reconnectEl &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey &&
+      e.key.toLowerCase() === "r"
+    ) {
+      reconnectSsh(sess);
+      return false;
+    }
+    if (!e.ctrlKey) return true;
     if (e.key === "PageDown" || e.key === "PageUp") return false;
     if (!e.shiftKey) return true;
     const k = e.key.toLowerCase();
