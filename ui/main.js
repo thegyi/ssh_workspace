@@ -185,6 +185,8 @@ const settings = {
     localStorage.getItem("sshws.font") ||
     '"Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace',
   size: Number(localStorage.getItem("sshws.fontsize")) || 13,
+  // File double-click in the SFTP panes: off until enabled in settings.
+  dblclick: localStorage.getItem("sshws.dblclick") === "1",
 };
 
 function applySettings() {
@@ -203,6 +205,7 @@ let fontList = null;
 document.getElementById("settings-btn").addEventListener("click", async () => {
   f("s-theme").value = settings.theme;
   f("s-size").value = settings.size;
+  f("s-dblclick").checked = settings.dblclick;
   settingsModal.hidden = false;
   if (fontList === null) {
     try {
@@ -232,9 +235,11 @@ document.getElementById("settings-form").addEventListener("submit", (e) => {
   settings.theme = f("s-theme").value;
   settings.font = f("s-font").value.trim() || "monospace";
   settings.size = Math.min(32, Math.max(8, Number(f("s-size").value) || 13));
+  settings.dblclick = f("s-dblclick").checked;
   localStorage.setItem("sshws.theme", settings.theme);
   localStorage.setItem("sshws.font", settings.font);
   localStorage.setItem("sshws.fontsize", String(settings.size));
+  localStorage.setItem("sshws.dblclick", settings.dblclick ? "1" : "0");
   applySettings();
   settingsModal.hidden = true;
 });
@@ -1557,7 +1562,17 @@ function entryRow(half, ent) {
     });
   }
   row.addEventListener("dblclick", () => {
-    if (ent.is_dir) half.refresh(ent.path);
+    if (ent.is_dir) {
+      half.refresh(ent.path);
+    } else if (!settings.dblclick) {
+      // File double-click is opt-in (Settings) — off means no action.
+    } else if (half.isRemote) {
+      // Remote file: download into the local pane's current directory.
+      transferItems(half.sess, true, [ent], half.sess.ft.local.cwd);
+    } else {
+      // Local file: open with the system default application.
+      invoke("local_open", { path: ent.path }).catch((e) => toast(String(e), true));
+    }
   });
   return row;
 }
