@@ -35,7 +35,8 @@
         ],
         "desktopTemplate": "packaging/app.desktop",
         "files": {
-          "/usr/share/applications/dev.sshworkspace.desktop.desktop": "packaging/dev.sshworkspace.desktop.desktop"
+          "/usr/share/applications/dev.sshworkspace.desktop.desktop": "packaging/dev.sshworkspace.desktop.desktop",
+          "/usr/share/applications/ssh-workspace.desktop": "packaging/ssh-workspace.desktop"
         }
       },
       "rpm": {
@@ -44,7 +45,8 @@
         ],
         "desktopTemplate": "packaging/app.desktop",
         "files": {
-          "/usr/share/applications/dev.sshworkspace.desktop.desktop": "packaging/dev.sshworkspace.desktop.desktop"
+          "/usr/share/applications/dev.sshworkspace.desktop.desktop": "packaging/dev.sshworkspace.desktop.desktop",
+          "/usr/share/applications/ssh-workspace.desktop": "packaging/ssh-workspace.desktop"
         }
       }
     },

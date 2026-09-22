@@ -7,3 +7,4 @@ Name=SSH Workspace
 Terminal=false
 Type=Application
 StartupWMClass=dev.sshworkspace.desktop
+NoDisplay=true

@@ -1,3 +1,6 @@
+# Visible menu entry. Filename must equal the Wayland app_id, which is the
+# binary name (prgname) while app.enableGtkAppId stays disabled — this is
+# what KWin matches running windows against for the taskbar icon.
 [Desktop Entry]
 Categories=System;Network;
 Comment=SSH workspace with host management and multi-terminal console
@@ -7,4 +10,3 @@ Name=SSH Workspace
 Terminal=false
 Type=Application
 StartupWMClass=ssh-workspace
-NoDisplay=true

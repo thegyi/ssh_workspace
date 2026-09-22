@@ -6,7 +6,7 @@
   "scripts": {
     "tauri": "tauri",
     "dev": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri dev",
-    "build": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri build",
+    "build": "PATH=\"$HOME/.cargo/bin:$PATH\" tauri build && node scripts/fix-deb-ar.mjs src-tauri/target/*/bundle/deb/*.deb",
     "test": "node --test ui/util.test.js"
   },
   "devDependencies": {

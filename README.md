@@ -48,6 +48,15 @@ npm run build   # tauri build (release binary + .deb/.AppImage bundles)
 Note: `npm run dev`/`build` prepend `~/.cargo/bin` to `PATH` so the rustup
 toolchain is used instead of an older system cargo.
 
+`npm run build` also runs `scripts/fix-deb-ar.mjs`, which repacks the
+`.deb` when its `ar` member headers are malformed. tauri-bundler writes
+the builder's uid/gid into 6-digit `ar` fields without truncating, so on
+accounts with uids > 6 digits (e.g. AD domain users) dpkg/apt reject the
+package with `Invalid archive member header`
+([tauri#9558](https://github.com/tauri-apps/tauri/issues/9558)). The
+script rewrites the headers (uid/gid 0); already-valid archives are left
+untouched.
+
 ## Where things are stored
 
 | Data            | Location                               |
