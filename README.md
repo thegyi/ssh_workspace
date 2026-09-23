@@ -24,6 +24,12 @@ over SFTP with a dual-pane drag & drop browser.
   - Double-click to enter directories, `..` / `↑` to go up, editable path bar
   - Drag & drop files or whole directories between panes (recursive);
     Ctrl-click for multi-select
+  - Keyboard navigation (MC/Far-style): `↑`/`↓`/`PgUp`/`PgDn`/`Home`/`End`
+    move the cursor (`Shift` extends selection, `Space`/`Ins` toggles it,
+    `Ctrl+A` selects all, type a letter to jump), `Enter` opens,
+    `Backspace` goes up, `Tab` switches panes, `F3` properties, `F4` edit,
+    `F5` copy to the other pane, `F2`/`F6` rename, `F7` new directory,
+    `F8`/`Del` delete, `Ctrl+H` hidden files, `Ctrl+R` refresh
   - Live transfer progress, auto-refresh of the destination pane
 
 ## Requirements
