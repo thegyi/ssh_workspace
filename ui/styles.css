@@ -513,6 +513,10 @@ body {
   padding: 4px;
 }
 
+.ft-list:focus {
+  outline: none;
+}
+
 .ft-list.drop-target {
   outline: 2px dashed var(--accent);
   outline-offset: -2px;
@@ -535,6 +539,15 @@ body {
 
 .ft-row.sel {
   background: #1f6feb33;
+}
+
+.ft-row.cur {
+  outline: 1px dotted var(--muted);
+  outline-offset: -1px;
+}
+
+.ft-list:focus .ft-row.cur {
+  outline-color: var(--accent);
 }
 
 .ft-ico {
