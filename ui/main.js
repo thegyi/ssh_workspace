@@ -699,7 +699,6 @@ function activateTab(sess) {
   requestAnimationFrame(() => {
     sess.fit?.fit();
     sess.term?.focus();
-    sess.ft?.focused?.listEl.focus();
   });
 }
 
@@ -1305,19 +1304,9 @@ function buildFtpUI(sess, remoteHome) {
   status.className = "ft-xfers";
   wrap.append(body, status);
   sess.pane.append(wrap);
-  sess.ft = { remote, local, status, seq: 0, ops: new Map(), focused: remote };
-  // Tab swaps focus between the two file lists from anywhere in the pane
-  // (toolbar buttons, path input included).
-  wrap.addEventListener("keydown", (e) => {
-    if (e.key !== "Tab" || e.defaultPrevented) return;
-    e.preventDefault();
-    const next = remote.el.contains(document.activeElement) ? local : remote;
-    next.listEl.focus();
-  });
+  sess.ft = { remote, local, status, seq: 0, ops: new Map() };
   remote.refresh(remoteHome);
   local.refresh("");
-  // Focus the remote list so keyboard navigation works right away.
-  if (sess === activeTab) remote.listEl.focus();
 }
 
 function ftHalf(sess, label, isRemote) {
@@ -1387,7 +1376,6 @@ function ftHalf(sess, label, isRemote) {
 
   const list = document.createElement("div");
   list.className = "ft-list";
-  list.tabIndex = 0;
   el.append(bar, list);
 
   const half = {
@@ -1401,7 +1389,6 @@ function ftHalf(sess, label, isRemote) {
     entries: [],
     showHidden: false,
     anchor: null,
-    cursor: 0,
     syncStar: starRefresh,
   };
   // Lets the global tauri://drag-* handlers map a DOM hit to this pane.
@@ -1487,166 +1474,12 @@ function ftHalf(sess, label, isRemote) {
     transferItems(sess, data.isRemote, data.items, half.cwd);
   });
 
-  // --- keyboard navigation (MC/Far-style) ---
-  list.addEventListener("focus", () => {
-    if (sess.ft) sess.ft.focused = half;
-  });
-  // Clicking a row (or empty space) hands keyboard focus to the list and
-  // moves the cursor to the clicked row.
-  list.addEventListener("mousedown", (e) => {
-    list.focus({ preventScroll: true });
-    const row = e.target.closest(".ft-row");
-    if (row) {
-      half.cursor = [...list.children].indexOf(row);
-      syncCur(half);
-    }
-  });
-  // Buttons keep mouse focus after a click; give it back to the list so the
-  // keyboard keeps working (the path input keeps it — it needs typing).
-  bar.addEventListener("click", (e) => {
-    if (e.target !== path) list.focus({ preventScroll: true });
-  });
-  list.addEventListener("keydown", (e) => {
-    // Ctrl+PageUp/PageDown cycles tabs globally — leave it alone.
-    if (e.ctrlKey && (e.key === "PageUp" || e.key === "PageDown")) return;
-    const rows = [...list.children];
-    const prevCur = Math.min(half.cursor, rows.length - 1);
-    const curEnt = () => half.byPath.get(rows[half.cursor]?.dataset.path) ?? null;
-    // Action targets: the current selection, falling back to the cursor row.
-    const targets = () => {
-      const sel = [...half.selected].map((p) => half.byPath.get(p)).filter(Boolean);
-      if (sel.length) return sel;
-      const ent = curEnt();
-      return ent ? [ent] : [];
-    };
-    const moveTo = (i, extend) => {
-      half.cursor = Math.max(0, Math.min(rows.length - 1, i));
-      if (extend) {
-        half.anchor ??= rows[prevCur]?.dataset.path ?? null;
-        let ai = rows.findIndex((r) => r.dataset.path === half.anchor);
-        if (ai < 0) ai = half.cursor;
-        const [lo, hi] = ai < half.cursor ? [ai, half.cursor] : [half.cursor, ai];
-        half.selected.clear();
-        for (let j = lo; j <= hi; j++) {
-          const p = rows[j].dataset.path;
-          if (half.byPath.has(p)) half.selected.add(p); // ".." is not selectable
-        }
-      } else {
-        half.selected.clear();
-        const p = rows[half.cursor]?.dataset.path;
-        if (p && half.byPath.has(p)) {
-          half.selected.add(p);
-          half.anchor = p;
-        } else {
-          half.anchor = null;
-        }
-      }
-      syncSel(half);
-      syncCur(half);
-      rows[half.cursor]?.scrollIntoView({ block: "nearest" });
-    };
-    const page = Math.max(1, Math.floor(list.clientHeight / 24) - 1);
-    switch (e.key) {
-      case "ArrowDown": moveTo(half.cursor + 1, e.shiftKey); break;
-      case "ArrowUp": moveTo(half.cursor - 1, e.shiftKey); break;
-      case "PageDown": moveTo(half.cursor + page, e.shiftKey); break;
-      case "PageUp": moveTo(half.cursor - page, e.shiftKey); break;
-      case "Home": moveTo(0, e.shiftKey); break;
-      case "End": moveTo(rows.length - 1, e.shiftKey); break;
-      case " ":
-      case "Insert": {
-        const ent = curEnt();
-        if (ent) {
-          if (half.selected.has(ent.path)) half.selected.delete(ent.path);
-          else half.selected.add(ent.path);
-        }
-        half.cursor = Math.min(half.cursor + 1, rows.length - 1);
-        syncSel(half);
-        syncCur(half);
-        rows[half.cursor]?.scrollIntoView({ block: "nearest" });
-        break;
-      }
-      case "Enter": {
-        const row = rows[half.cursor];
-        const ent = curEnt();
-        if (row && !ent) half.refresh(row.dataset.path); // ".." row
-        else if (ent?.is_dir) half.refresh(ent.path);
-        else if (ent && isRemote) transferItems(sess, true, [ent], sess.ft.local.cwd);
-        else if (ent) {
-          invoke("local_open", { path: ent.path }).catch((err) => toast(String(err), true));
-        }
-        break;
-      }
-      case "Backspace": half.refresh(parentPath(half.cwd)); break;
-      case "Escape":
-        half.selected.clear();
-        half.anchor = null;
-        syncSel(half);
-        break;
-      case "Delete":
-      case "F8": {
-        const t = targets();
-        if (t.length) deleteEntries(sess, half, t);
-        break;
-      }
-      case "F5": {
-        const t = targets();
-        if (t.length) {
-          const dest = isRemote ? sess.ft.local.cwd : sess.ft.remote.cwd;
-          transferItems(sess, isRemote, t, dest);
-        }
-        break;
-      }
-      case "F2":
-      case "F6": {
-        const t = targets();
-        if (t.length === 1) renameEntry(sess, half, t[0]);
-        break;
-      }
-      case "F7": mk.click(); break;
-      case "F4": {
-        const t = targets();
-        if (t.length === 1 && !t[0].is_dir) editEntry(sess, half, t[0]);
-        break;
-      }
-      case "F3": {
-        const t = targets();
-        if (t.length === 1) showProps(t[0]);
-        break;
-      }
-      default:
-        if (e.ctrlKey && e.key.toLowerCase() === "a") {
-          half.selected = new Set([...half.byPath.keys()]);
-          syncSel(half);
-        } else if (e.ctrlKey && e.key.toLowerCase() === "h") {
-          hid.click();
-        } else if (e.ctrlKey && e.key.toLowerCase() === "r") {
-          half.refresh(half.cwd);
-        } else if (!e.ctrlKey && !e.altKey && !e.metaKey && e.key.length === 1) {
-          // Typeahead: jump to the next entry starting with the typed char.
-          const q = e.key.toLowerCase();
-          for (let k = 1; k <= rows.length; k++) {
-            const i = (half.cursor + k) % rows.length;
-            const ent = half.byPath.get(rows[i].dataset.path);
-            if (ent?.name.toLowerCase().startsWith(q)) {
-              moveTo(i, false);
-              break;
-            }
-          }
-        } else {
-          return; // not ours — leave default handling alone
-        }
-    }
-    e.preventDefault();
-  });
-
   return half;
 }
 
 function renderEntries(half) {
   half.selected.clear();
   half.anchor = null;
-  half.cursor = 0;
   const entries = half.entries.filter((e) => half.showHidden || !e.name.startsWith("."));
   half.byPath = new Map(entries.map((e) => [e.path, e]));
   half.listEl.innerHTML = "";
@@ -1654,7 +1487,6 @@ function renderEntries(half) {
     half.listEl.append(entryRow(half, { name: "..", is_dir: true, path: parentPath(half.cwd) }));
   }
   for (const ent of entries) half.listEl.append(entryRow(half, ent));
-  syncCur(half);
 }
 
 function entryRow(half, ent) {
@@ -1749,12 +1581,6 @@ function syncSel(half) {
   for (const row of half.listEl.children) {
     row.classList.toggle("sel", half.selected.has(row.dataset.path));
   }
-}
-
-function syncCur(half) {
-  [...half.listEl.children].forEach((row, i) =>
-    row.classList.toggle("cur", i === half.cursor),
-  );
 }
 
 /* ---------------- file context menu ---------------- */
